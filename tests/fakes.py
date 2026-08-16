@@ -1,0 +1,146 @@
+"""Offline stand-ins for chain-facing services."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from olala.domain.models import TokenInfo
+
+
+class FakeProvider:
+    """Scriptable RpcProvider replacement. No network, ever."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.signatures: dict[str, list[dict[str, Any]]] = {}
+        self.transactions: dict[str, dict[str, Any]] = {}
+        self.account_info: dict[str, dict[str, Any]] = {}
+        self.token_supply: dict[str, float] = {}
+        self.token_decimals: dict[str, int] = {}
+        self.largest_accounts: dict[str, list[dict[str, Any]]] = {}
+        self.account_owners: dict[str, str] = {}
+        self.sol_balances: dict[str, float] = {}
+        self.sent_transactions: list[str] = []
+        self.fail_transactions: set[str] = set()
+
+    def get_signatures(self, address, limit=100, before=None):
+        entries = self.signatures.get(address, [])
+        if before is not None:
+            signatures = [e["signature"] for e in entries]
+            if before in signatures:
+                entries = entries[signatures.index(before) + 1:]
+        return entries[:limit]
+
+    def get_transaction(self, signature):
+        if signature in self.fail_transactions:
+            from olala.chain.provider import ChainError
+            raise ChainError(f"scripted failure for {signature}")
+        return self.transactions.get(signature)
+
+    def get_sol_balance(self, address):
+        return self.sol_balances.get(address, 0.0)
+
+    def get_account_info(self, pubkey):
+        return self.account_info.get(pubkey)
+
+    def get_token_supply(self, mint):
+        return self.token_supply.get(mint, 0.0)
+
+    def get_token_decimals(self, mint):
+        return self.token_decimals.get(mint, 6)
+
+    def get_token_largest_accounts(self, mint):
+        return self.largest_accounts.get(mint, [])
+
+    def get_token_account_owners(self, token_accounts):
+        return [self.account_owners.get(a) for a in token_accounts]
+
+    def send_transaction(self, signed_tx_base64):
+        self.sent_transactions.append(signed_tx_base64)
+        return f"fake-sig-{len(self.sent_transactions)}"
+
+
+class FakeBirdeye:
+    """BirdeyeClient replacement: scripted leaderboard, optional failure."""
+
+    def __init__(self, traders=None, fail=False):
+        self.traders = traders or []
+        self.fail = fail
+        self.calls = 0
+
+    def top_traders(self, window="1W", limit=10):
+        self.calls += 1
+        if self.fail:
+            from olala.chain.birdeye import BirdeyeError
+            raise BirdeyeError("scripted failure")
+        return self.traders[:limit]
+
+
+class FakeJupiterTokens:
+    """JupiterClient replacement for the trending-tokens surface."""
+
+    def __init__(self, tokens=None, fail=False):
+        self.tokens = tokens or []
+        self.fail = fail
+
+    def top_tokens(self, interval="24h", limit=60):
+        if self.fail:
+            from olala.chain.jupiter import JupiterError
+            raise JupiterError("scripted failure")
+        return self.tokens[:limit]
+
+
+class FakeMarketData:
+    """MarketDataService replacement returning scripted TokenInfo."""
+
+    def __init__(self, tokens: dict[str, TokenInfo] | None = None) -> None:
+        self.tokens = tokens or {}
+
+    def get_token_info(self, mint: str) -> TokenInfo | None:
+        return self.tokens.get(mint)
+
+    def search_winners(self, min_liquidity_usd, min_change_pct, limit=8):
+        return []
+
+
+def make_swap_tx(trader: str, sol_delta_lamports: int, mint: str,
+                 token_delta: float, fee: int = 5000,
+                 extra_mint_delta: tuple[str, float] | None = None,
+                 failed: bool = False) -> dict[str, Any]:
+    """Build a jsonParsed-shaped transaction where `trader` is fee payer.
+
+    ``sol_delta_lamports`` is the trader's raw balance change INCLUDING the
+    fee they paid (as it appears on chain).
+    """
+    pre_token, post_token = [], []
+
+    def add_token(owner, token_mint, pre_amount, post_amount):
+        pre_token.append({"owner": owner, "mint": token_mint,
+                          "uiTokenAmount": {"uiAmount": pre_amount}})
+        post_token.append({"owner": owner, "mint": token_mint,
+                           "uiTokenAmount": {"uiAmount": post_amount}})
+
+    base = 1000.0
+    add_token(trader, mint, base, base + token_delta)
+    if extra_mint_delta:
+        extra_mint, delta = extra_mint_delta
+        add_token(trader, extra_mint, base, base + delta)
+
+    pre_balance = 50_000_000_000
+    return {
+        "blockTime": 1_755_000_000,
+        "meta": {
+            "err": {"InstructionError": []} if failed else None,
+            "fee": fee,
+            "preBalances": [pre_balance, 0],
+            "postBalances": [pre_balance + sol_delta_lamports, 0],
+            "preTokenBalances": pre_token,
+            "postTokenBalances": post_token,
+        },
+        "transaction": {"message": {"accountKeys": [
+            {"pubkey": trader, "signer": True},
+            {"pubkey": "SomePool11111111111111111111111111111111111",
+             "signer": False},
+        ]}},
+    }

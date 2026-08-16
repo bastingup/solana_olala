@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solana-olala — Command Deck</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="css/main.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='6' fill='%23a855f7'/%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%236d28d9' stroke-width='2'/%3E%3C/svg%3E">
+</head>
+<body>
+<!--
+THESIS: The trading system as a charted galaxy under command — wallets are
+planets, copied traders are moons orbiting the planet they feed, positions
+are satellites strung between; refuses the sidebar-and-stat-cards crypto
+dashboard outright.
+OWN-WORLD: True-black space (#050508), nebula purples (#a855f7/#6d28d9)
+carrying structure and identity, cyan gains / red-rose losses, one
+safety-orange arm key; Chakra Petch command labels over Red Hat Mono
+readouts; orbit rings, glow rims, chip wall.
+STORY: The operator sees every wallet, trader, and token in one sky, reads
+risk state at a glance, and intervenes by touching the object itself.
+FIRST VIEWPORT: One unscrolled cockpit — command bar on top, wallet rail
+left, live galaxy center, feed and roster right, full token chip wall base.
+FORM: Galaxy starmap, candidate 1 of 7, IMPECCABLE'S PICK; seed 8217fc00.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the
+finish review, the verdict, and DESIGN.md
+-->
+
+<header id="command-bar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <circle cx="16" cy="16" r="5" class="mark-core"/>
+      <ellipse cx="16" cy="16" rx="13" ry="6" class="mark-orbit" transform="rotate(-24 16 16)"/>
+      <circle cx="27" cy="11" r="1.6" class="mark-moon"/>
+    </svg>
+    <h1>SOLANA·OLALA</h1>
+    <span class="brand-sub">copy-trade command deck</span>
+  </div>
+
+  <div class="fleet-readout" role="status" aria-label="Fleet totals">
+    <div class="readout">
+      <span class="readout-label">FLEET EQUITY</span>
+      <span class="readout-value" id="fleet-equity">—</span>
+    </div>
+    <div class="readout">
+      <span class="readout-label">UNREALIZED</span>
+      <span class="readout-value" id="fleet-upnl">—</span>
+    </div>
+    <div class="readout">
+      <span class="readout-label">SOL/USD</span>
+      <span class="readout-value" id="sol-price">—</span>
+    </div>
+  </div>
+
+  <div class="mode-cluster">
+    <button id="toggle-wallets" class="ghost-btn rail-toggle"
+            aria-pressed="false" aria-label="Show the wallets panel">WALLETS</button>
+    <button id="toggle-ops" class="ghost-btn rail-toggle"
+            aria-pressed="false" aria-label="Show the feed and traders panel">FEED</button>
+    <span id="link-status" class="link-status" data-state="connecting">
+      <span class="link-dot" aria-hidden="true"></span><span id="link-label">LINKING</span>
+    </span>
+    <span id="mode-badge" class="mode-badge" data-mode="paper">SAFE</span>
+    <button id="arm-key" class="arm-key" data-armed="false"
+            aria-label="Hold to arm live trading">
+      <span class="arm-fill" aria-hidden="true"></span>
+      <span class="arm-text">HOLD TO ARM LIVE</span>
+    </button>
+  </div>
+</header>
+
+<main id="layout">
+  <aside id="wallet-rail" aria-label="Wallets">
+    <div class="rail-head">
+      <h2>WALLETS</h2>
+      <button id="add-wallet-btn" class="ghost-btn" aria-label="Add a wallet">+ ADD</button>
+    </div>
+    <div id="keystore-note" class="keystore-note" hidden>
+      <p>Keystore locked — live wallets need the passphrase.</p>
+      <form id="unlock-form">
+        <input id="unlock-pass" type="password" placeholder="Keystore passphrase"
+               autocomplete="current-password" aria-label="Keystore passphrase">
+        <button type="submit" class="ghost-btn">UNLOCK</button>
+      </form>
+    </div>
+    <ul id="wallet-list" class="wallet-list"></ul>
+    <div class="rail-foot">
+      <p class="doctrine">Reserve SOL is held back for re-sizing into dips.
+      New entries never touch it.</p>
+    </div>
+  </aside>
+
+  <section id="galaxy-stage" aria-label="Galaxy view of traders, wallets and positions">
+    <svg id="galaxy" role="img" aria-label="Live map: wallet planets, trader moons, position satellites"></svg>
+    <div id="scan-banner" class="scan-banner" role="status">
+      <div class="scan-head">
+        <span class="scan-pulse" aria-hidden="true"></span>
+        <span id="scan-phase">DISCOVERY</span>
+        <span id="scan-source" class="scan-source"></span>
+        <span id="scan-countdown" class="scan-countdown"></span>
+      </div>
+      <div id="scan-text" class="scan-activity">Waiting for the first sweep…</div>
+      <div id="scan-counters" class="scan-counters"></div>
+    </div>
+    <div id="inspector" class="inspector" hidden></div>
+    <div id="galaxy-legend" class="legend">
+      <span><i class="lg lg-wallet"></i>paper planet</span>
+      <span><i class="lg lg-live"></i>live planet</span>
+      <span><i class="lg lg-trader"></i>trader moon</span>
+      <span><i class="lg lg-pos"></i>position</span>
+      <span><i class="lg lg-cand"></i>candidate</span>
+    </div>
+  </section>
+
+  <aside id="ops-rail" aria-label="Operations">
+    <section id="feed-panel">
+      <div class="rail-head"><h2>LIVE FEED</h2><span id="feed-count" class="count-chip">0</span></div>
+      <ul id="feed" class="feed"></ul>
+    </section>
+    <section id="roster-panel">
+      <div class="rail-head"><h2>TRADERS</h2>
+        <span class="count-chip" id="roster-counts">0 followed</span>
+      </div>
+      <ul id="roster" class="roster"></ul>
+    </section>
+  </aside>
+</main>
+
+<footer id="chip-wall" aria-label="Every token across all wallets and traders">
+  <span class="wall-label">TOKENS IN PLAY</span>
+  <div id="chips" class="chips">
+    <span class="wall-empty">No tokens yet — chips light up as positions open and traders trade.</span>
+  </div>
+</footer>
+
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-card">
+    <div class="rail-head"><h2 id="drawer-title">ADD WALLET</h2>
+      <button id="drawer-close" class="ghost-btn" aria-label="Close"><svg class="close-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button></div>
+    <div class="drawer-tabs" role="tablist">
+      <button class="tab active" data-tab="paper" role="tab" aria-selected="true">PAPER</button>
+      <button class="tab" data-tab="live" role="tab" aria-selected="false">LIVE</button>
+    </div>
+    <form id="wallet-form">
+      <label>Label
+        <input id="wallet-label" type="text" placeholder="e.g. Scout Three" maxlength="24">
+      </label>
+      <div id="paper-fields">
+        <label>Starting SOL
+          <input id="wallet-sol" type="number" min="0.1" step="0.1" value="10">
+        </label>
+      </div>
+      <div id="live-fields" hidden>
+        <label id="live-passphrase-field" hidden>Keystore passphrase
+          <span class="hint" id="live-passphrase-hint"></span>
+          <input id="live-passphrase" type="password" autocomplete="current-password">
+        </label>
+        <label>Private key <span class="hint">(base58 or JSON array — encrypted at rest, never shown again)</span>
+          <textarea id="wallet-secret" rows="3" autocomplete="off" spellcheck="false"></textarea>
+        </label>
+      </div>
+      <p id="wallet-error" class="form-error" role="alert" hidden></p>
+      <button type="submit" class="commit-btn">REGISTER WALLET</button>
+    </form>
+  </div>
+</div>
+
+<div id="toast-zone" aria-live="polite"></div>
+
+<script src="js/vendor/d3.v7.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

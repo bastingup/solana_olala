@@ -1,0 +1,158 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-color",
+        "value": "#140a26",
+        "createdAt": "2026-08-16T09:06:58.028Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#1a0d02",
+        "createdAt": "2026-08-16T09:06:58.155Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#3c3654",
+        "createdAt": "2026-08-16T09:06:58.288Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#4c1d95",
+        "createdAt": "2026-08-16T09:06:58.420Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#5f0a22",
+        "createdAt": "2026-08-16T09:06:58.546Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#7c3aed",
+        "createdAt": "2026-08-16T09:06:58.679Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#8b5cf6",
+        "createdAt": "2026-08-16T09:06:58.810Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#9f1239",
+        "createdAt": "2026-08-16T09:06:58.939Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#f43f5e",
+        "createdAt": "2026-08-16T09:06:59.064Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#f8c9a4",
+        "createdAt": "2026-08-16T09:06:59.192Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#fb923c",
+        "createdAt": "2026-08-16T09:06:59.318Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#ffd9bd",
+        "createdAt": "2026-08-16T09:06:59.448Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(255, 255, 255, 0.45)",
+        "createdAt": "2026-08-16T09:06:59.570Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(30, 20, 55, 0.55)",
+        "createdAt": "2026-08-16T09:06:59.695Z",
+        "reason": "documenter decision: component-local device color, deliberately left uncanonized per DESIGN.md 'Not canonized' note; stylesheet shipped through Impeccable finish review (ship verdict)"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#7f2434",
+        "createdAt": "2026-08-16T12:34:59.104Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(248, 113, 113, 0.22)",
+        "createdAt": "2026-08-16T12:34:59.224Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(248, 113, 113, 0.45)",
+        "createdAt": "2026-08-16T12:34:59.348Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(248, 113, 113, 0.35)",
+        "createdAt": "2026-08-16T12:34:59.471Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#3d2a33",
+        "createdAt": "2026-08-16T12:34:59.592Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#221318",
+        "createdAt": "2026-08-16T12:34:59.715Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#6b4a52",
+        "createdAt": "2026-08-16T12:34:59.833Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#57121e",
+        "createdAt": "2026-08-16T12:34:59.951Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#200a0f",
+        "createdAt": "2026-08-16T12:35:00.072Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(248, 113, 113, 0.55)",
+        "createdAt": "2026-08-16T12:35:00.202Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgba(248, 113, 113, 0.6)",
+        "createdAt": "2026-08-16T12:35:00.316Z",
+        "reason": "operator-requested live-universe feature: --live token alpha variants and component-local power-button/planet chassis colors, per documenter component-local policy"
+      }
+    ]
+  }
+}

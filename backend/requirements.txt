@@ -1,0 +1,8 @@
+flask>=3.0
+flask-sock>=0.7
+requests>=2.32
+cryptography>=42.0
+PyYAML>=6.0
+solders>=0.21
+base58>=2.1
+websocket-client>=1.7

@@ -1,0 +1,18 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Environment files — never commit secrets
+.env
+.env.*
+*.env
+
+# Runtime state — never commit balances, keys, or local config drift
+backend/olala.db
+backend/keystore.enc
+backend/config.yaml
+
+# Design review artifacts
+.impeccable/review/
+

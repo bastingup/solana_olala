@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-16T18:00:00Z",
+  "title": "Design System: Solana-olala",
+  "extensions": {
+    "colorMeta": {
+      "space": { "role": "neutral", "displayName": "Space Black", "canonical": "#050508", "tonalRamp": ["oklch(15% 0.01 290)", "oklch(26% 0.01 290)", "oklch(38% 0.01 290)", "oklch(49% 0.01 290)", "oklch(60% 0.01 290)", "oklch(72% 0.01 290)", "oklch(84% 0.01 290)", "oklch(95% 0.01 290)"] },
+      "space-raised": { "role": "neutral", "displayName": "Raised Space", "canonical": "#0c0a14", "tonalRamp": ["oklch(15% 0.02 295)", "oklch(26% 0.02 295)", "oklch(38% 0.02 295)", "oklch(49% 0.02 295)", "oklch(60% 0.02 295)", "oklch(72% 0.02 295)", "oklch(84% 0.02 295)", "oklch(95% 0.02 295)"] },
+      "space-panel": { "role": "neutral", "displayName": "Panel Space", "canonical": "#100d1c", "tonalRamp": ["oklch(15% 0.03 295)", "oklch(26% 0.03 295)", "oklch(38% 0.03 295)", "oklch(49% 0.03 295)", "oklch(60% 0.03 295)", "oklch(72% 0.03 295)", "oklch(84% 0.03 295)", "oklch(95% 0.03 295)"] },
+      "nebula": { "role": "primary", "displayName": "Nebula Purple", "canonical": "#a855f7", "tonalRamp": ["oklch(15% 0.19 303)", "oklch(26% 0.19 303)", "oklch(38% 0.19 303)", "oklch(49% 0.19 303)", "oklch(60% 0.19 303)", "oklch(72% 0.19 303)", "oklch(84% 0.19 303)", "oklch(95% 0.19 303)"] },
+      "nebula-deep": { "role": "primary", "displayName": "Deep Nebula", "canonical": "#6d28d9", "tonalRamp": ["#0b0912", "#181129", "#312057", "#3b1478", "#4c1d95", "#6d28d9", "#7c3aed", "#8b5cf6"] },
+      "nebula-soft": { "role": "primary", "displayName": "Soft Nebula", "canonical": "#c4b5fd", "tonalRamp": ["oklch(15% 0.1 293)", "oklch(26% 0.1 293)", "oklch(38% 0.1 293)", "oklch(49% 0.1 293)", "oklch(60% 0.1 293)", "oklch(72% 0.1 293)", "oklch(84% 0.1 293)", "oklch(95% 0.1 293)"] },
+      "nebula-line": { "role": "primary", "displayName": "Nebula Hairline", "canonical": "rgba(168, 85, 247, 0.22)" },
+      "gain": { "role": "secondary", "displayName": "Gain Cyan", "canonical": "#22d3ee", "tonalRamp": ["oklch(15% 0.1 205)", "oklch(26% 0.1 205)", "oklch(38% 0.11 205)", "oklch(49% 0.12 205)", "oklch(60% 0.13 205)", "oklch(72% 0.14 205)", "oklch(84% 0.12 205)", "oklch(95% 0.06 205)"] },
+      "loss": { "role": "secondary", "displayName": "Loss Rose", "canonical": "#fb7185", "tonalRamp": ["#5f0a22", "#9f1239", "#f43f5e", "#fb7185"] },
+      "live": { "role": "tertiary", "displayName": "Live Red", "canonical": "#f87171", "tonalRamp": ["#0e0608", "#1c070c", "#220b10", "#4c1220", "#4c1622", "#57121e", "#7f2434", "#9f1f35"] },
+      "arm": { "role": "tertiary", "displayName": "Safety Orange", "canonical": "#f97316", "tonalRamp": ["#1a0d02", "#9a3d07", "#f97316", "#fb923c", "#f8c9a4", "#ffd9bd"] },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "#ece8f6", "tonalRamp": ["oklch(15% 0.02 293)", "oklch(26% 0.02 293)", "oklch(38% 0.02 293)", "oklch(49% 0.02 293)", "oklch(60% 0.02 293)", "oklch(72% 0.02 293)", "oklch(84% 0.02 293)", "oklch(95% 0.02 293)"] },
+      "ink-dim": { "role": "neutral", "displayName": "Dim Ink", "canonical": "#a89fc7", "tonalRamp": ["oklch(15% 0.05 293)", "oklch(26% 0.05 293)", "oklch(38% 0.05 293)", "oklch(49% 0.05 293)", "oklch(60% 0.05 293)", "oklch(72% 0.05 293)", "oklch(84% 0.05 293)", "oklch(95% 0.05 293)"] },
+      "ink-faint": { "role": "neutral", "displayName": "Faint Ink", "canonical": "#8d84b0", "tonalRamp": ["oklch(15% 0.05 292)", "oklch(26% 0.05 292)", "oklch(38% 0.05 292)", "oklch(49% 0.05 292)", "oklch(60% 0.05 292)", "oklch(72% 0.05 292)", "oklch(84% 0.05 292)", "oklch(95% 0.05 292)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Brand wordmark only, with nebula text-glow." },
+      "label": { "displayName": "Command Label", "purpose": "Uppercase tracked Chakra Petch signage: headings, buttons, statuses, node labels. 9-12px; smaller sizes track wider (up to 0.22em)." },
+      "body": { "displayName": "Body Mono", "purpose": "Feed prose, form labels, doctrine text. 11-13px Red Hat Mono." },
+      "data": { "displayName": "Data Readout", "purpose": "Command-bar fleet readouts (15px); always tabular-nums so streaming digits never shimmy." },
+      "readout": { "displayName": "Equity Readout", "purpose": "Wallet-card equity (16px tabular mono) — the per-wallet number the operator watches." },
+      "control": { "displayName": "Control Label", "purpose": "12px Chakra Petch control text: mode badge, wallet names, inspector headers." },
+      "ui": { "displayName": "Dense UI Mono", "purpose": "11px panel text: feed rows, spec rows, chips, scan banner, form labels, toasts run 11-12px." },
+      "caption": { "displayName": "Caption", "purpose": "10px micro text: wallet meta, doctrine, legend, count chips, ghost-button and link labels, galaxy node labels." }
+    },
+    "shadows": [
+      { "name": "glow-nebula", "value": "0 0 14px rgba(168, 85, 247, 0.45)", "purpose": "Hover/lit emphasis and floating-layer identity glow. Nothing glows at rest except the wordmark." },
+      { "name": "keycap-arm", "value": "0 3px 0 #9a3d07, 0 5px 10px rgba(0, 0, 0, 0.6)", "purpose": "Arm-key ledge; collapses with translateY(2px) on press." },
+      { "name": "keycap-commit", "value": "0 2px 0 #3b1478, 0 4px 8px rgba(0, 0, 0, 0.5)", "purpose": "Commit/danger keycap ledge (danger uses rim #5f0a22)." },
+      { "name": "float-drop", "value": "0 12px 30px rgba(0, 0, 0, 0.6)", "purpose": "Deep ambient drop under inspector/toasts/drawer, always paired with a 1px colored border and usually the glow." },
+      { "name": "rose-alarm", "value": "0 0 14px rgba(251, 113, 133, 0.35)", "purpose": "Error toast glow." },
+      { "name": "live-armed-glow", "value": "drop-shadow(0 0 12px rgba(248, 113, 113, 0.65))", "purpose": "Armed live planet core (SVG filter); present only while wallet and universe are both armed (The Two-Key Rule)." },
+      { "name": "power-on-glow", "value": "0 0 16px rgba(248, 113, 113, 0.55), inset 0 0 8px rgba(248, 113, 113, 0.35)", "purpose": "Power button in the on state; its state text carries text-shadow 0 0 8px rgba(248, 113, 113, 0.6)." }
+    ],
+    "motion": [
+      { "name": "press", "value": "90ms ease-out", "purpose": "Keycap press (transform + shadow collapse)." },
+      { "name": "hover", "value": "120ms ease-out", "purpose": "Border-color / background hover shifts on ghost buttons, chips, roster rows." },
+      { "name": "card-lift", "value": "140ms ease-out", "purpose": "Wallet-card border and glow promotion." },
+      { "name": "power-toggle", "value": "150ms ease-out", "purpose": "Power-button border, color, and glow shift between dark and live." },
+      { "name": "layer-in", "value": "220-260ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Drawer slide-in (220ms) and toast rise-in (260ms)." },
+      { "name": "node-exit", "value": "500ms fade", "purpose": "Galaxy nodes fade out on removal." },
+      { "name": "scan-pulse", "value": "2.2s ease-out infinite", "purpose": "Expanding ring on the scan banner dot." },
+      { "name": "orbit-advance", "value": "0.00008 rad/ms (~78s per revolution)", "purpose": "Trader-moon anchor angle advance; the low-energy simulation (alpha 0.04-0.08) carries satellites along. Disabled under prefers-reduced-motion." },
+      { "name": "settle-then-drift", "value": "150 synchronous ticks at alpha 1, then restart at alpha 0.08", "purpose": "Force layout is composed before first paint; live motion is gentle drift only." },
+      { "name": "galaxy-debounce", "value": "200ms", "purpose": "Streaming deltas debounce galaxy re-layout; snapshots update immediately." },
+      { "name": "hold-to-arm", "value": "1200ms hold with linear progress fill", "purpose": "Deliberate mode switch; early release cancels." }
+    ],
+    "breakpoints": [
+      { "name": "ops-fold", "value": "1180px", "purpose": "Ops rail leaves the grid; FEED toggle appears." },
+      { "name": "single-column", "value": "860px", "purpose": "Wallet rail leaves too; command bar wraps; whole-panel swaps only." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Default rail/utility action: hairline-bordered uppercase command.",
+      "html": "<button class=\"ds-ghost-btn\">+ ADD</button>",
+      "css": ".ds-ghost-btn { font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 10px; letter-spacing: 0.12em; color: var(--nebula-soft, #c4b5fd); background: none; border: 1px solid var(--nebula-line, rgba(168,85,247,0.22)); border-radius: 3px; padding: 4px 9px; cursor: pointer; transition: background 120ms ease-out, color 120ms ease-out; } .ds-ghost-btn:hover { background: rgba(168, 85, 247, 0.18); color: var(--ink, #ece8f6); } .ds-ghost-btn:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; }"
+    },
+    {
+      "name": "Commit Keycap",
+      "kind": "button",
+      "refersTo": "button-commit",
+      "description": "Affirmative form action: purple keycap with a hard ledge that presses down.",
+      "html": "<button class=\"ds-commit-btn\">REGISTER WALLET</button>",
+      "css": ".ds-commit-btn { font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--ink, #ece8f6); background: linear-gradient(180deg, #8b5cf6, var(--nebula-deep, #6d28d9)); border: none; border-radius: 4px; padding: 8px 10px; cursor: pointer; box-shadow: 0 2px 0 #3b1478, 0 4px 8px rgba(0, 0, 0, 0.5); transition: transform 90ms ease-out, box-shadow 90ms ease-out; } .ds-commit-btn:active { transform: translateY(2px); box-shadow: 0 0 0 #3b1478; } .ds-commit-btn:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; }"
+    },
+    {
+      "name": "Danger Keycap",
+      "kind": "button",
+      "refersTo": "button-commit",
+      "description": "Destructive inspector action: the commit keycap re-skinned in loss rose.",
+      "html": "<button class=\"ds-danger-btn\">CLOSE POSITION NOW</button>",
+      "css": ".ds-danger-btn { font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--ink, #ece8f6); background: linear-gradient(180deg, #f43f5e, #9f1239); border: none; border-radius: 4px; padding: 8px 10px; cursor: pointer; box-shadow: 0 2px 0 #5f0a22, 0 4px 8px rgba(0, 0, 0, 0.5); transition: transform 90ms ease-out, box-shadow 90ms ease-out; } .ds-danger-btn:active { transform: translateY(2px); box-shadow: 0 0 0 #5f0a22; } .ds-danger-btn:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; }"
+    },
+    {
+      "name": "Arm Key",
+      "kind": "button",
+      "refersTo": "button-arm",
+      "description": "The one orange object: hold 1200ms to arm live trading; progress fill sweeps across.",
+      "html": "<button class=\"ds-arm-key\"><span class=\"ds-arm-fill\"></span><span class=\"ds-arm-text\">HOLD TO ARM LIVE</span></button>",
+      "css": ".ds-arm-key { position: relative; overflow: hidden; font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; color: #1a0d02; background: linear-gradient(180deg, #fb923c, var(--arm, #f97316)); border: none; border-radius: 4px; padding: 8px 14px; cursor: pointer; box-shadow: 0 3px 0 #9a3d07, 0 5px 10px rgba(0, 0, 0, 0.6); transition: transform 90ms ease-out, box-shadow 90ms ease-out; user-select: none; } .ds-arm-key:active { transform: translateY(2px); box-shadow: 0 1px 0 #9a3d07, 0 2px 5px rgba(0, 0, 0, 0.6); } .ds-arm-key:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; } .ds-arm-key.armed { background: linear-gradient(180deg, #c4b5fd, var(--nebula, #a855f7)); color: #140a26; box-shadow: 0 3px 0 #4c1d95, 0 5px 10px rgba(0, 0, 0, 0.6); } .ds-arm-fill { position: absolute; inset: 0; width: 0%; background: rgba(255, 255, 255, 0.45); } .ds-arm-key:active .ds-arm-fill { width: 60%; transition: width 1200ms linear; } .ds-arm-text { position: relative; }"
+    },
+    {
+      "name": "Power Button",
+      "kind": "button",
+      "refersTo": "power-btn",
+      "description": "Per-wallet arm control in live-wallet inspectors: dark until switched on, then live-red with a halo (The Two-Key Rule).",
+      "html": "<div class=\"ds-power-row\"><button class=\"ds-power-btn\" aria-pressed=\"false\" aria-label=\"Arm this wallet\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M7.5 5.6a8 8 0 1 0 9 0\"/><line x1=\"12\" y1=\"3\" x2=\"12\" y2=\"11\"/></svg></button><span class=\"ds-power-state\">DARK — HOLDS FIRE</span></div> <div class=\"ds-power-row\"><button class=\"ds-power-btn on\" aria-pressed=\"true\" aria-label=\"Disarm this wallet\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M7.5 5.6a8 8 0 1 0 9 0\"/><line x1=\"12\" y1=\"3\" x2=\"12\" y2=\"11\"/></svg></button><span class=\"ds-power-state on\">ARMED</span></div>",
+      "css": ".ds-power-row { display: inline-flex; align-items: center; gap: 12px; padding-top: 4px; } .ds-power-btn { width: 46px; height: 46px; border-radius: 50%; border: 2px solid #3d2a33; background: radial-gradient(circle at 40% 32%, #221318, #120a0d); display: grid; place-items: center; color: #6b4a52; cursor: pointer; transition: box-shadow 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out; } .ds-power-btn svg { width: 20px; height: 20px; } .ds-power-btn path, .ds-power-btn line { stroke: currentColor; stroke-width: 2; stroke-linecap: round; fill: none; } .ds-power-btn.on { border-color: var(--live, #f87171); color: var(--live, #f87171); background: radial-gradient(circle at 40% 32%, #57121e, #200a0f); box-shadow: 0 0 16px rgba(248, 113, 113, 0.55), inset 0 0 8px rgba(248, 113, 113, 0.35); } .ds-power-btn:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; } .ds-power-state { font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 11px; letter-spacing: 0.16em; color: var(--ink-faint, #8d84b0); } .ds-power-state.on { color: var(--live, #f87171); text-shadow: 0 0 8px rgba(248, 113, 113, 0.6); }"
+    },
+    {
+      "name": "Token Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Chip-wall pill: display-face symbol plus mono amount colored by P&L; watch tier at 0.65 opacity reads 'seen'.",
+      "html": "<button class=\"ds-chip ds-chip-gain\"><span class=\"ds-chip-sym\">WIF</span><span class=\"ds-chip-amt\">◎ 1.24</span></button> <button class=\"ds-chip ds-chip-watch\"><span class=\"ds-chip-sym\">JUP</span><span class=\"ds-chip-amt\">seen</span></button>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 14px; border: 1px solid var(--nebula-line, rgba(168,85,247,0.22)); background: rgba(16, 13, 28, 0.8); font-size: 11px; white-space: nowrap; cursor: pointer; color: var(--ink, #ece8f6); transition: border-color 120ms ease-out, box-shadow 120ms ease-out; } .ds-chip:hover { border-color: var(--nebula, #a855f7); box-shadow: 0 0 14px rgba(168, 85, 247, 0.45); } .ds-chip-sym { font-family: var(--display, 'Chakra Petch', sans-serif); font-weight: 600; letter-spacing: 0.06em; } .ds-chip-amt { font-family: var(--mono, 'Red Hat Mono', monospace); color: var(--ink-dim, #a89fc7); font-variant-numeric: tabular-nums; } .ds-chip-gain .ds-chip-amt { color: var(--gain, #22d3ee); } .ds-chip-watch { opacity: 0.65; }"
+    },
+    {
+      "name": "Wallet Card",
+      "kind": "card",
+      "refersTo": "wallet-card",
+      "description": "Rail card with equity readout and the three-segment fuel bar: cash (nebula), striped reserve, positions (cyan).",
+      "html": "<div class=\"ds-wallet-card\" tabindex=\"0\"><div class=\"ds-w-row\"><span class=\"ds-w-name\">SCOUT ONE</span><span class=\"ds-w-kind\">PAPER</span></div><div class=\"ds-w-equity\">◎ 12.40<span class=\"ds-w-usd\">$2,163</span></div><div class=\"ds-fuel\"><span class=\"ds-fuel-cash\" style=\"width:45%\"></span><span class=\"ds-fuel-reserve\" style=\"width:20%\"></span><span class=\"ds-fuel-pos\" style=\"width:35%\"></span></div><div class=\"ds-w-meta\"><span>2 open</span><span>reserve ◎ 2.5</span></div></div>",
+      "css": ".ds-wallet-card { font-family: var(--mono, 'Red Hat Mono', monospace); border: 1px solid var(--nebula-line, rgba(168,85,247,0.22)); border-radius: 5px; background: linear-gradient(160deg, rgba(30, 20, 55, 0.55), rgba(12, 10, 20, 0.4)); padding: 10px 11px; display: grid; gap: 7px; width: 240px; cursor: pointer; transition: border-color 140ms ease-out, box-shadow 140ms ease-out; } .ds-wallet-card:hover { border-color: var(--nebula, #a855f7); box-shadow: 0 0 14px rgba(168, 85, 247, 0.45); } .ds-wallet-card:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; } .ds-w-row { display: flex; justify-content: space-between; align-items: baseline; } .ds-w-name { font-family: var(--display, 'Chakra Petch', sans-serif); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: var(--ink, #ece8f6); } .ds-w-kind { font-size: 9px; letter-spacing: 0.12em; color: var(--ink-faint, #8d84b0); } .ds-w-equity { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink, #ece8f6); } .ds-w-usd { color: var(--ink-dim, #a89fc7); font-size: 10px; margin-left: 6px; font-weight: 400; } .ds-fuel { height: 8px; border-radius: 4px; overflow: hidden; display: flex; background: rgba(168, 85, 247, 0.10); } .ds-fuel-cash { background: var(--nebula, #a855f7); } .ds-fuel-reserve { background: repeating-linear-gradient(45deg, #7c3aed 0 4px, #4c1d95 4px 8px); } .ds-fuel-pos { background: var(--gain, #22d3ee); } .ds-w-meta { display: flex; justify-content: space-between; color: var(--ink-dim, #a89fc7); font-size: 10px; }"
+    },
+    {
+      "name": "Feed Entry",
+      "kind": "custom",
+      "description": "Live-feed row: drawn 1.5-stroke icon, event prose, relative timestamp, kind-colored left border (cyan trade shown).",
+      "html": "<li class=\"ds-feed-li\"><svg class=\"ds-feed-icon\" viewBox=\"0 0 16 16\"><path d=\"M2 5h9m0 0L8.5 2.5M11 5 8.5 7.5M14 11H5m0 0 2.5-2.5M5 11l2.5 2.5\"/></svg><span class=\"ds-feed-what\"><b>Scout One</b> bought <b>WIF</b> · ◎ 0.42</span><span class=\"ds-feed-when\">12s</span></li>",
+      "css": ".ds-feed-li { list-style: none; display: grid; grid-template-columns: 16px 1fr auto; gap: 8px; align-items: start; padding: 6px 8px; border-radius: 4px; background: rgba(16, 13, 28, 0.6); border-left: 1px solid var(--gain, #22d3ee); font-family: var(--mono, 'Red Hat Mono', monospace); font-size: 11px; line-height: 1.45; width: 280px; color: var(--gain, #22d3ee); } .ds-feed-icon { width: 14px; height: 14px; margin-top: 1px; } .ds-feed-icon path { stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; } .ds-feed-what { color: var(--ink-dim, #a89fc7); } .ds-feed-what b { color: var(--ink, #ece8f6); font-weight: 500; } .ds-feed-when { color: var(--ink-faint, #8d84b0); font-size: 9px; white-space: nowrap; }"
+    },
+    {
+      "name": "Mode Badge",
+      "kind": "chip",
+      "refersTo": "mode-badge",
+      "description": "SAFE/ARMED universe-state badge; ARMED re-skins to safety orange with a text glow.",
+      "html": "<span class=\"ds-mode-badge\">SAFE</span> <span class=\"ds-mode-badge ds-mode-live\">ARMED</span>",
+      "css": ".ds-mode-badge { font-family: var(--display, 'Chakra Petch', sans-serif); font-weight: 700; font-size: 12px; letter-spacing: 0.2em; padding: 5px 12px; border: 1px solid var(--nebula, #a855f7); border-radius: 3px; color: var(--nebula-soft, #c4b5fd); background: rgba(109, 40, 217, 0.18); } .ds-mode-live { border-color: var(--arm, #f97316); color: #ffd9bd; background: rgba(249, 115, 22, 0.2); text-shadow: 0 0 10px rgba(249, 115, 22, 0.7); }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Mono text field on raised space; focus is the global 2px nebula ring.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"e.g. Scout Three\">",
+      "css": ".ds-input { font-family: var(--mono, 'Red Hat Mono', monospace); font-size: 12px; color: var(--ink, #ece8f6); background: var(--space-raised, #0c0a14); border: 1px solid var(--nebula-line, rgba(168,85,247,0.22)); border-radius: 3px; padding: 7px 8px; width: 220px; caret-color: var(--nebula, #a855f7); } .ds-input::placeholder { color: var(--ink-faint, #8d84b0); } .ds-input:focus-visible { outline: 2px solid var(--nebula, #a855f7); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Galaxy Command Deck",
+    "overview": "Solana-olala's interface is a space-sim star chart under operator command, not a finance dashboard. The trading system is drawn as one charted sky: wallets are planets (ringed, gradient-lit primary bodies), copied traders are moons orbiting the planet they feed, and open positions are satellites strung between them. Unproven candidates glimmer faint along the upper band; rejected traders cool to embers along the lower. The sidebar-and-stat-cards crypto dashboard is refused outright — aggregate state is read from the sky itself, and the operator intervenes by touching the object in question.\n\nThe world is true-black space with nebula purple carrying all structure and identity. Purple draws the borders, glows, labels, and links; it never renders a financial verdict. Money outcomes speak in exactly two voices — cyan for gain, rose for loss — and two colors are held in reserve for real money: safety orange arms the universe (the hold-to-arm key, the ARMED badge, keystore and live-wallet warnings), and live-red marks each live wallet itself — a red planet that stays dark until both the wallet and the universe are armed. Everything fits one unscrolled cockpit viewport: command bar on top, wallet rail left, live galaxy center, feed and roster right, and a full token chip wall across the base. Density is high, type is small and engineered, and every number is monospaced.",
+    "keyCharacteristics": [
+      "One-viewport cockpit; the page itself never scrolls (overflow: hidden), only panels scroll internally.",
+      "Planet / moon / satellite hierarchy is the information architecture, not decoration.",
+      "Purple = structure and identity; cyan/rose = P&L verdicts; orange = the universe arm key; live-red = per-wallet live identity. Nothing else judges or threatens.",
+      "Chakra Petch uppercase command labels over Red Hat Mono tabular readouts.",
+      "Glow is the primary elevation cue; keycap buttons are the primary press affordance.",
+      "Cross-highlighting everywhere: hovering any representation of a thing lights its counterpart in the galaxy (.lit)."
+    ],
+    "rules": [
+      { "name": "The One Orange Rule", "body": "Safety orange (#f97316) marks universe-level real-money execution and nothing else: the hold-to-arm key, the ARMED mode badge, keystore and live-wallet warnings (peach tints #f8c9a4 / #ffd9bd). Per-wallet live identity is live-red, never orange; using orange for decoration, emphasis, or any non-live-money purpose is a violation — its scarcity is what makes the arm key legible as danger.", "section": "colors" },
+      { "name": "The Two-Key Rule", "body": "Live is dark by default and red when hot. A live wallet renders as a dark red planet with an unlit power button until *both* keys are turned — the wallet's own power button and the universe arm key. Only then does live-red (#f87171) glow: planet drop-shadow, power-button halo, state text. Live-red never appears on paper surfaces and never judges money.", "section": "colors" },
+      { "name": "The Verdict Rule", "body": "Purple never judges money. Every P&L, exposure, and status verdict is cyan (#22d3ee) for gain/followed or rose (#fb7185) for loss/rejected; purple is only allowed to say \"this exists and belongs to the system.\"", "section": "colors" },
+      { "name": "The One Hairline Rule", "body": "All resting borders are the same translucent purple hairline (rgba(168,85,247,0.22), 1px). State changes promote the border to full nebula, optionally with the glow; they never introduce a new border color.", "section": "colors" },
+      { "name": "The Tabular Truth Rule", "body": "Every number the operator compares — equity, PnL, prices, win rates — is set in Red Hat Mono with font-variant-numeric: tabular-nums so columns of digits never shimmy as the stream updates.", "section": "typography" },
+      { "name": "The Signage Rule", "body": "Chakra Petch appears only uppercase, only tracked out, only short: it labels and commands. Sentences, prose, and data always fall to Red Hat Mono.", "section": "typography" },
+      { "name": "The Whole-Panel Rule", "body": "At narrow widths, panels are swapped in and out as complete units via the command-bar toggles. Squeezing a rail, shrinking the galaxy to a corner, or hiding content without a toggle to bring it back are all violations.", "section": "layout" },
+      { "name": "The Glow-Is-Meaning Rule", "body": "A glow is a statement that this object is currently interesting (hovered, linked to the thing under the cursor, or floating above the sky). Nothing glows at rest except the brand wordmark — and an armed live planet, whose steady red glow is the danger light, not decoration.", "section": "elevation" },
+      { "name": "The Drawn-Stroke Rule", "body": "Every icon is a hand-drawn inline SVG in currentColor with round caps — 1.5 stroke at the standard 14-16px sizes (the 20px power glyph steps up to 2 to hold weight inside its 46px button). Icon fonts, emoji, filled glyphs, and third-party icon packs are outside the world.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do settle the galaxy synchronously before showing it: run the force simulation ~150 ticks at full alpha on data changes, paint the composed sky, then restart at alpha 0.08 for gentle drift. The sky is never seen mid-explosion.",
+      "Do keep orbital motion barely perceptible: moon anchors advance at 0.00008 rad/ms (~78s per revolution), and node positions persist across data updates (the _memory map) so the sky feels like a place, not a re-roll.",
+      "Do honor prefers-reduced-motion fully: no orbit timer, no drift restart (alphaDecay 0.3, instant settles), no pulse/entrance animations, all transitions zeroed.",
+      "Do cross-highlight bidirectionally with the shared .lit class: chip ↔ satellite, wallet card ↔ planet, roster row ↔ moon. Any new representation of an existing object must light its counterpart.",
+      "Do open the same inspector from every representation of an object, and put the intervention button (danger keycap) inside it — the operator acts on the object, never in a settings page.",
+      "Do make dangerous state changes deliberate: mode switching is a 1200ms hold with visible progress and early-release cancel.",
+      "Do keep live wallets dark until both keys turn: the red planet, power button, and state text glow only when the wallet is armed *and* the universe is armed (The Two-Key Rule).",
+      "Do debounce galaxy re-layout on streaming deltas (200ms) while rendering panels immediately; snapshots update the galaxy at once.",
+      "Do keep Escape as the universal dismiss: inspector, drawer, and narrow-width rail swaps all clear.",
+      "Do theme the browser surfaces purple: ::selection on nebula-deep, thin nebula-deep scrollbars, nebula caret, and the 2px nebula :focus-visible ring with 2px offset everywhere."
+    ],
+    "donts": [
+      "Don't introduce sidebar-and-stat-cards dashboard furniture (KPI grids, chart panels, breadcrumbs, nav menus). The galaxy plus its rails is the entire information architecture.",
+      "Don't use orange outside universe-arm surfaces, live-red outside live-wallet identity, green for gains, or red for losses (losses are always rose #fb7185). The palette is closed: purple structure, cyan/rose verdicts, one orange key, one live red.",
+      "Don't squish panels at narrow widths — swap whole panels via the command-bar toggles per The Whole-Panel Rule.",
+      "Don't let the page scroll. New content goes inside a scrolling panel or behind a toggle; the cockpit frame (command bar, stage, chip wall) stays fixed.",
+      "Don't use icon fonts, emoji, or filled glyph icons; every icon is a drawn 1.5-stroke currentColor SVG (The Drawn-Stroke Rule).",
+      "Don't set comparable numbers in the display face or proportional figures; readouts are Red Hat Mono tabular-nums (The Tabular Truth Rule).",
+      "Don't fabricate performance evidence in the UI — no returns, win-rate claims, or benchmarks beyond what the stream reports (PRODUCT.md: none exist).",
+      "Don't add second borders, colored border variants, or heavy outlines; state is expressed by promoting the one hairline to nebula and adding glow."
+    ]
+  }
+}
