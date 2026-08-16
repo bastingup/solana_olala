@@ -1,6 +1,6 @@
 # solana-olala
 
-![Screenshot](images/SolOlala.png)
+![Screenshot](./SolOlala.png)
 
 ¥€$ !!!! :)
 
