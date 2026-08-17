@@ -16,7 +16,6 @@ export class Store {
       // the UI must not assert any of it as fact (a pre-snapshot guess of
       // "no keystore" told the operator their keystore was missing).
       hydrated: false,
-      mode: "paper",
       keystore: { exists: false, locked: true },
       wallets: new Map(),
       traders: new Map(),
@@ -63,7 +62,6 @@ export class Store {
 
   _on_snapshot(data) {
     this.state.hydrated = true;
-    this.state.mode = data.mode;
     this.state.devMode = Boolean(data.dev_mode);
     this.state.keystore = data.keystore;
     this.state.solPrice = data.sol_price_usd || 0;
@@ -190,13 +188,6 @@ export class Store {
 
   _on_execution_error(data, ts) {
     this._pushFeed("reject", `Execution error: ${esc(data.error)}`, ts);
-  }
-
-  _on_mode_changed(data, ts) {
-    this.state.mode = data.mode;
-    this._pushFeed("system", data.mode === "live"
-      ? "LIVE MODE ARMED — orders will sign real transactions."
-      : "Paper mode — fills are simulated.", ts);
   }
 
   _on_config_changed(data) { this.state.config = data; }

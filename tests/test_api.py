@@ -28,10 +28,9 @@ def client(ctx):
 
 def test_state_snapshot_shape(client):
     data = client.get("/api/state").get_json()
-    for key in ("mode", "wallets", "positions", "traders", "config",
-                "keystore", "fills", "sol_price_usd"):
+    for key in ("wallets", "positions", "traders", "config",
+                "keystore", "fills", "sol_price_usd", "dev_mode"):
         assert key in data
-    assert data["mode"] == "paper"
     assert len(data["wallets"]) == 3
 
 
@@ -63,16 +62,34 @@ def test_add_live_wallet_requires_unlocked_keystore(client):
     assert response.get_json()["is_paper"] is False
 
 
-def test_live_mode_guarded(client):
-    # Locked keystore -> refused.
-    assert client.post("/api/mode", json={"mode": "live"}).status_code == 400
+def test_arming_guarded_by_keystore(client):
+    # Register a live wallet, then lock the keystore behind it: arming
+    # must demand an unlocked keystore holding the wallet's key, while
+    # disarming is always allowed.
     client.post("/api/keystore/unlock", json={"passphrase": "pw"})
-    # Unlocked but no live wallet -> still refused.
-    assert client.post("/api/mode", json={"mode": "live"}).status_code == 400
-    client.post("/api/wallets", json={"label": "V", "secret": str(Keypair())})
-    assert client.post("/api/mode", json={"mode": "live"}).status_code == 200
-    assert client.post("/api/mode", json={"mode": "paper"}).status_code == 200
-    assert client.post("/api/mode", json={"mode": "yolo"}).status_code == 400
+    wallet = client.post("/api/wallets", json={
+        "label": "V", "secret": str(Keypair())}).get_json()
+
+    armed = client.post(f"/api/wallets/{wallet['id']}/arm",
+                        json={"armed": True})
+    assert armed.status_code == 200
+    assert armed.get_json()["armed"] is True
+
+    disarmed = client.post(f"/api/wallets/{wallet['id']}/arm",
+                           json={"armed": False})
+    assert disarmed.status_code == 200
+    assert disarmed.get_json()["armed"] is False
+
+
+def test_legacy_mode_requests_rejected(client):
+    # The universe mode is gone: legacy clients get a clear 400, and no
+    # config write can smuggle it back in.
+    assert client.put("/api/config",
+                      json={"mode": "live"}).status_code == 400
+    # The route is gone; only the GET-only static handler pattern-matches
+    # the path, so legacy POSTs bounce with 405.
+    assert client.post("/api/mode",
+                       json={"mode": "live"}).status_code in (404, 405)
 
 
 def test_config_update_roundtrip_and_validation(client):

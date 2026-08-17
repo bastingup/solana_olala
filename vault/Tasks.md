@@ -3,6 +3,39 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — universe mode removed (2026-08-17)
+
+- [x] **Operator decision: no more `mode: paper|live`.** Paper and live
+      wallets coexist; a live wallet's own arm switch is the ONLY gate.
+      Removed: `AppConfig.mode`, `POST /api/mode`, `mode_changed` event,
+      snapshot `mode` field, engine's universe check, the hold-to-arm
+      key, and the SAFE/ARMED badge (badge now shows only "…" pre-
+      hydration and DEV in dev mode; hidden otherwise). The dev_mode
+      live lockout MOVED to per-wallet arming: `POST /api/wallets/<id>/
+      arm {armed:true}` returns 400 while dev_mode is on; disarming
+      always allowed. Legacy `mode` keys: ignored on config load
+      (dropped at next save), 400 on config PUT. Armed-planet glow now
+      follows `wallet.armed` alone. 176 tests green; DESIGN.md
+      (Power-Button Rule replaces Two-Key, One Peach replaces One
+      Orange) and vault docs updated.
+
+## Done — repo moved + satellite orbits (2026-08-17)
+
+- [x] Repo copied to `~/Repositories/solana_olala` (underscore). The
+      copied venv broke (venv scripts hardcode absolute paths — never
+      copy a venv); rebuilt at `backend/.venv`, 175 tests green. Local
+      state (config.yaml, keystore.enc, olala.db) survived the copy.
+- [x] **Satellite orbits (operator request):** position satellites no
+      longer tether to planet/moon with lines. Each orbits the moon of
+      the trader it copies (wallet planet as fallback if the moon left
+      the sky) — radius 34px +12 per extra satellite, ~31s per pass via
+      the same `_advanceOrbits` clockwork as moons — and drags a comet
+      tail: three fading arc segments in the satellite's PnL color,
+      anchored to its actual bearing so force nudges never detach it.
+      Rendering only; no logic changed. Verified with the fixture-
+      replayer screenshot trick (gain + loss satellites both shown).
+      DESIGN.md updated (satellite entry, links entry, north star).
+
 ## Fixed — Infinity in trader stats killed the frontend (2026-08-16 night)
 
 - [x] **"Frontend does not connect anymore":** root cause was NOT the

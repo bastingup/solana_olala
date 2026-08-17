@@ -7,12 +7,14 @@ memory, and the operator relies on them across sessions.
 
 ## Standing decisions (do not re-litigate)
 
-- **Paper mode is the default.** Pure local simulation against real
-  mainnet data. The operator explicitly chose local simulation over
+- **Paper simulation is the default.** Pure local simulation against
+  real mainnet data. The operator explicitly chose local simulation over
   devnet after the devnet trade-offs were explained (no Jupiter, no
-  liquidity, no traders there). Live execution exists (Jupiter swap +
-  solders signing) but is dormant behind mode=live + unlocked keystore +
-  registered live wallet.
+  liquidity, no traders there). There is NO universe-level mode anymore
+  (operator removed it 2026-08-17): paper and live wallets coexist, and
+  live execution is dormant behind each wallet's own arm switch
+  (unlocked keystore holding that wallet's key; dev_mode refuses to
+  arm; disarming always allowed). Do not reintroduce a global mode.
 - **Discovery has no seed-token list** (operator removed it 2026-08-16
   after the old pool-sampling harvested an arb bot). Candidates come from
   the Birdeye top-PnL leaderboard (`chain.birdeye_api_key`) with
@@ -35,7 +37,7 @@ memory, and the operator relies on them across sessions.
   page, seed 8217fc00). Hierarchy is user-corrected and binding: wallets
   are planets, traders are moons orbiting their assigned planet, positions
   are satellites between. Black dominant, purple secondary, cyan gains,
-  rose losses, one safety-orange arm key. The direction contract lives as
+  rose losses, live-red armed wallets. The direction contract lives as
   the first comment in `frontend/index.html`.
 
 ## How to work here

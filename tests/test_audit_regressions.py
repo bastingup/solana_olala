@@ -24,7 +24,10 @@ TRADER = "TraderAAAA1111111111111111111111111111111111"
 MINT = "MintAAAA111111111111111111111111111111111111"
 
 
-# -- C1: config PUT must not arm live mode --------------------------------
+# -- C1: config PUT must not open a live-trading side door ----------------
+# (Originally: PUT /api/config could set mode=live, bypassing the arming
+# guards. The universe mode is gone; the pin now holds the door shut for
+# legacy clients still sending the key.)
 
 def test_config_put_cannot_change_mode(tmp_path, config_store):
     from olala.api.server import AppContext, build_app
@@ -42,7 +45,7 @@ def test_config_put_cannot_change_mode(tmp_path, config_store):
 
     response = client.put("/api/config", json={"mode": "live"})
     assert response.status_code == 400
-    assert client.get("/api/state").get_json()["mode"] == "paper"
+    assert "mode" not in client.get("/api/state").get_json()
 
 
 # -- H3: closing a position twice must not mint SOL -----------------------

@@ -1,6 +1,6 @@
 /* Solana-olala — galaxy command deck.
    True-black space, nebula purple structure, cyan gains, rose losses,
-   one safety-orange arm key. Chakra Petch commands, Red Hat Mono readouts. */
+   live-red armed wallets. Chakra Petch commands, Red Hat Mono readouts. */
 
 :root {
   --space: #050508;
@@ -13,7 +13,6 @@
   --gain: #22d3ee;
   --loss: #fb7185;
   --live: #f87171;
-  --arm: #f97316;
   --ink: #ece8f6;
   --ink-dim: #a89fc7;
   --ink-faint: #8d84b0;
@@ -166,54 +165,6 @@ button {
   color: var(--gain);
   background: rgba(34, 211, 238, 0.14);
 }
-
-.arm-key[disabled] {
-  filter: grayscale(0.7);
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.mode-badge[data-mode="live"] {
-  border-color: var(--arm);
-  color: #ffd9bd;
-  background: rgba(249, 115, 22, 0.2);
-  text-shadow: 0 0 10px rgba(249, 115, 22, 0.7);
-}
-
-.arm-key {
-  position: relative;
-  overflow: hidden;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: #1a0d02;
-  background: linear-gradient(180deg, #fb923c, var(--arm));
-  border-radius: 4px;
-  padding: 8px 14px;
-  box-shadow: 0 3px 0 #9a3d07, 0 5px 10px rgba(0, 0, 0, 0.6);
-  transition: transform 90ms ease-out, box-shadow 90ms ease-out;
-  user-select: none;
-}
-
-.arm-key:active {
-  transform: translateY(2px);
-  box-shadow: 0 1px 0 #9a3d07, 0 2px 5px rgba(0, 0, 0, 0.6);
-}
-
-.arm-key[data-armed="true"] {
-  background: linear-gradient(180deg, #c4b5fd, var(--nebula));
-  box-shadow: 0 3px 0 #4c1d95, 0 5px 10px rgba(0, 0, 0, 0.6);
-  color: #140a26;
-}
-
-.arm-fill {
-  position: absolute;
-  inset: 0;
-  width: 0%;
-  background: rgba(255, 255, 255, 0.45);
-}
-
-.arm-key .arm-text { position: relative; }
 
 /* ---------- layout ---------- */
 
@@ -521,7 +472,13 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 }
 .planet-cap { fill: rgba(236, 232, 246, 0.12); }
 .assign-link { stroke: rgba(168, 85, 247, 0.35); stroke-width: 1.2; }
-.pos-link { stroke: rgba(34, 211, 238, 0.28); stroke-width: 1; }
+/* Comet tail behind each orbiting position satellite: three arc segments
+   thinning and fading with distance, stroked in the satellite's PnL color. */
+.pos-trail { pointer-events: none; }
+.pos-trail path { fill: none; stroke-linecap: round; }
+.pos-trail .trail-1 { stroke-width: 3; stroke-opacity: 0.32; }
+.pos-trail .trail-2 { stroke-width: 2; stroke-opacity: 0.16; }
+.pos-trail .trail-3 { stroke-width: 1.2; stroke-opacity: 0.07; }
 .node-label {
   font-family: var(--display);
   font-size: 10px;
@@ -894,7 +851,6 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   #layout { grid-template-columns: 1fr; }
   #wallet-rail { display: none; }
   #link-label { display: none; }
-  .arm-key { padding: 8px 10px; }
   .mode-cluster { gap: 10px; }
   #toggle-wallets { display: inline-block; }
   body.show-wallets #wallet-rail { display: flex; }

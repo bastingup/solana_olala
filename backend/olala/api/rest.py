@@ -1,8 +1,8 @@
 """REST API: actions and snapshots.
 
 The WebSocket stream carries all state changes; REST exists for commands —
-adding wallets, unlocking the keystore, changing configuration, switching
-mode — plus a full state snapshot for initial page load.
+adding wallets, unlocking the keystore, arming wallets, changing
+configuration — plus a full state snapshot for initial page load.
 """
 
 from __future__ import annotations
@@ -72,6 +72,11 @@ def build_rest_blueprint(app_context) -> Blueprint:
                                      "there is nothing to arm"}), 400
         if armed:
             # Arming needs a signer; disarming must always be possible.
+            if ctx.store.config.dev_mode:
+                return jsonify({"error": "dev mode is on — arming live "
+                                         "wallets is locked out because "
+                                         "dev configs relax the safety "
+                                         "screens"}), 400
             if ctx.keystore.is_locked:
                 return jsonify({"error": "unlock the keystore first"}), 400
             try:
@@ -146,33 +151,11 @@ def build_rest_blueprint(app_context) -> Blueprint:
     @api.put("/config")
     def put_config():
         payload = request.get_json(silent=True) or {}
-        if "mode" in payload:
-            # Mode changes carry safety checks that only /api/mode enforces.
-            return jsonify({"error": "mode is set via POST /api/mode"}), 400
         try:
             ctx.store.update(payload)
         except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
         ctx.bus.publish("config_changed", ctx.public_config())
         return jsonify(ctx.public_config())
-
-    @api.post("/mode")
-    def set_mode():
-        payload = request.get_json(silent=True) or {}
-        mode = payload.get("mode")
-        if mode not in ("paper", "live"):
-            return jsonify({"error": "mode must be 'paper' or 'live'"}), 400
-        if mode == "live":
-            if ctx.store.config.dev_mode:
-                return jsonify({"error": "dev mode is on — live trading is "
-                                         "locked out because dev configs "
-                                         "relax the safety screens"}), 400
-            if ctx.keystore.is_locked:
-                return jsonify({"error": "unlock the keystore first"}), 400
-            if not any(not w.is_paper for w in ctx.portfolio.wallets()):
-                return jsonify({"error": "no live wallet registered"}), 400
-        ctx.store.update({"mode": mode})
-        ctx.bus.publish("mode_changed", {"mode": mode})
-        return jsonify({"mode": mode})
 
     return api

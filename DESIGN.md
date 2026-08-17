@@ -12,7 +12,7 @@ colors:
   gain: "#22d3ee"
   loss: "#fb7185"
   live: "#f87171"
-  arm: "#f97316"
+  warning-peach: "#f8c9a4"
   ink: "#ece8f6"
   ink-dim: "#a89fc7"
   ink-faint: "#8d84b0"
@@ -83,11 +83,6 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.md}"
     padding: "8px 10px"
-  button-arm:
-    backgroundColor: "{colors.arm}"
-    textColor: "#1a0d02"
-    rounded: "{rounded.md}"
-    padding: "8px 14px"
   chip:
     backgroundColor: "rgba(16, 13, 28, 0.8)"
     textColor: "{colors.ink}"
@@ -101,11 +96,6 @@ components:
   mode-badge:
     backgroundColor: "rgba(109, 40, 217, 0.18)"
     textColor: "{colors.nebula-soft}"
-    rounded: "{rounded.sm}"
-    padding: "5px 12px"
-  mode-badge-armed:
-    backgroundColor: "rgba(249, 115, 22, 0.2)"
-    textColor: "#ffd9bd"
     rounded: "{rounded.sm}"
     padding: "5px 12px"
   power-btn:
@@ -132,7 +122,8 @@ components:
 Solana-olala's interface is a space-sim star chart under operator command, not a
 finance dashboard. The trading system is drawn as one charted sky: wallets are
 planets (ringed, gradient-lit primary bodies), copied traders are moons orbiting
-the planet they feed, and open positions are satellites strung between them.
+the planet they feed, and open positions are satellites in slow orbit around
+the moon of the trader they copy, each dragging a fading comet tail.
 Unproven candidates glimmer faint along the upper band; rejected traders cool to
 embers along the lower. The sidebar-and-stat-cards crypto dashboard is refused
 outright — aggregate state is read from the sky itself, and the operator
@@ -141,10 +132,10 @@ intervenes by touching the object in question.
 The world is true-black space with nebula purple carrying all structure and
 identity. Purple draws the borders, glows, labels, and links; it never renders
 a financial verdict. Money outcomes speak in exactly two voices — cyan for gain,
-rose for loss — and two colors are held in reserve for real money: safety orange
-arms the universe (the hold-to-arm key, the ARMED badge, keystore and
-live-wallet warnings), and live-red marks each live wallet itself — a red planet
-that stays dark until both the wallet and the universe are armed. Everything
+rose for loss — and real money keeps two reserved voices: peach warnings on
+keystore and live-wallet surfaces, and live-red marking each live wallet
+itself — a red planet that stays dark until the operator arms it through its
+power button. Everything
 fits one unscrolled cockpit viewport: command bar on top,
 wallet rail left, live galaxy center, feed and roster right, and a full token
 chip wall across the base. Density is high, type is small and engineered, and
@@ -153,7 +144,7 @@ every number is monospaced.
 **Key Characteristics:**
 - One-viewport cockpit; the page itself never scrolls (`overflow: hidden`), only panels scroll internally.
 - Planet / moon / satellite hierarchy is the information architecture, not decoration.
-- Purple = structure and identity; cyan/rose = P&L verdicts; orange = the universe arm key; live-red = per-wallet live identity. Nothing else judges or threatens.
+- Purple = structure and identity; cyan/rose = P&L verdicts; peach = live-money warnings; live-red = per-wallet live identity. Nothing else judges or threatens.
 - Chakra Petch uppercase command labels over Red Hat Mono tabular readouts.
 - Glow is the primary elevation cue; keycap buttons are the primary press affordance.
 - Cross-highlighting everywhere: hovering any representation of a thing lights its counterpart in the galaxy (`.lit`).
@@ -173,8 +164,8 @@ A true-black space ground, one structural purple family, two verdict colors, and
 - **Loss Rose** (`loss` #fb7185): negative P&L, rejections, closed-link state, error toasts and form errors, danger-button family. Financial "bad" is always this rose, never pure red.
 
 ### Tertiary
-- **Safety Orange** (`arm` #f97316): reserved exclusively for the universe-level arm — the HOLD-TO-ARM keycap, the ARMED mode badge, the locked-keystore notice, the LIVE wallet-card tag (as peach tints #f8c9a4 / #ffd9bd). It appears nowhere else in the interface.
-- **Live Red** (`live` #f87171): the per-wallet live identity. Live wallets render as red planets — a dark gradient body (#4c1622 → #220b10 → #0e0608, rim #7f2434) while disarmed, a hot one (#9f1f35 → #4c1220 → #1c070c, live-red rim) when armed — and the inspector's power button, its state text, and the legend's live-planet swatch all speak it. It glows only when the wallet and the universe are both armed; it never renders a P&L verdict.
+- **Warning Peach** (#f8c9a4): reserved for live-money warnings — the locked-keystore notice and the LIVE wallet-card tag. It appears nowhere else in the interface.
+- **Live Red** (`live` #f87171): the per-wallet live identity. Live wallets render as red planets — a dark gradient body (#4c1622 → #220b10 → #0e0608, rim #7f2434) while disarmed, a hot one (#9f1f35 → #4c1220 → #1c070c, live-red rim) when armed — and the inspector's power button, its state text, and the legend's live-planet swatch all speak it. It glows only while the wallet is armed; it never renders a P&L verdict.
 
 ### Neutral
 - **Space** (`space` #050508): the true-black page ground, warmed by two enormous purple radial washes on `body`.
@@ -185,9 +176,9 @@ A true-black space ground, one structural purple family, two verdict colors, and
 - **Faint Ink** (`ink-faint` #8d84b0): labels, hints, timestamps, doctrine text, candidate nodes.
 
 ### Named Rules
-**The One Orange Rule.** Safety orange (#f97316) marks universe-level real-money execution and nothing else: the hold-to-arm key, the ARMED mode badge, keystore and live-wallet warnings (peach tints #f8c9a4 / #ffd9bd). Per-wallet live identity is live-red, never orange; using orange for decoration, emphasis, or any non-live-money purpose is a violation — its scarcity is what makes the arm key legible as danger.
+**The One Peach Rule.** Warning peach (#f8c9a4) marks live-money caution and nothing else: the locked-keystore notice and the LIVE wallet-card tag. Per-wallet live identity is live-red, never peach; using peach for decoration, emphasis, or any non-live-money purpose is a violation — its scarcity is what keeps live-money surfaces legible as danger.
 
-**The Two-Key Rule.** Live is dark by default and red when hot. A live wallet renders as a dark red planet with an unlit power button until *both* keys are turned — the wallet's own power button and the universe arm key. Only then does live-red (#f87171) glow: planet drop-shadow, power-button halo, state text. Live-red never appears on paper surfaces and never judges money.
+**The Power-Button Rule.** Live is dark by default and red when hot. A live wallet renders as a dark red planet with an unlit power button until the operator arms it — a keystore-gated act (the keystore must be unlocked and hold that wallet's key; dev mode refuses outright, and disarming is always allowed). Only then does live-red (#f87171) glow: planet drop-shadow, power-button halo, state text. Live-red never appears on paper surfaces and never judges money.
 
 **The Verdict Rule.** Purple never judges money. Every P&L, exposure, and status verdict is cyan (#22d3ee) for gain/followed or rose (#fb7185) for loss/rejected; purple is only allowed to say "this exists and belongs to the system."
 
@@ -226,14 +217,14 @@ Spacing runs a tight 6/8/10/12/14/18px rhythm: 14px rail padding, 18px bar paddi
 
 Depth is glow, not shadow-stacking. The resting interface is flat translucent panels on true black; importance and interactivity are signaled by the nebula glow (`--glow-nebula: 0 0 14px rgba(168, 85, 247, 0.45)`) appearing on hover, `.lit` cross-highlight, and floating layers. Floating layers (inspector, toasts, drawer) add a deep black ambient drop (e.g. `0 12px 30px rgba(0,0,0,0.6)`) under the glow to lift off the sky.
 
-The exception is the keycap: physical action buttons (arm key, commit, danger) carry a hard 2–3px bottom ledge (`0 3px 0 <dark rim>` plus a soft drop) that collapses on `:active` with a 2px `translateY` — a pressable key, the world's one piece of physical materiality.
+The exception is the keycap: physical action buttons (commit, danger) carry a hard 2–3px bottom ledge (`0 3px 0 <dark rim>` plus a soft drop) that collapses on `:active` with a 2px `translateY` — a pressable key, the world's one piece of physical materiality.
 
 ### Shadow Vocabulary
 - **Nebula glow** (`box-shadow: 0 0 14px rgba(168, 85, 247, 0.45)`): hover/lit emphasis on cards and chips; identity glow on floating panels.
-- **Keycap ledge** (`0 3px 0 #9a3d07, 0 5px 10px rgba(0,0,0,0.6)` on the arm key; `0 2px 0 #3b1478, 0 4px 8px rgba(0,0,0,0.5)` on commit buttons): the pressed state drops to a 0–1px ledge with `translateY(2px)`.
+- **Keycap ledge** (`0 2px 0 #3b1478, 0 4px 8px rgba(0,0,0,0.5)` on commit buttons): the pressed state drops to a 0–1px ledge with `translateY(2px)`.
 - **Floating-layer drop** (`0 10–12px 24–30px rgba(0,0,0,0.5–0.6)`): inspector, toasts, drawer — always paired with a 1px purple (or state-colored) border.
 - **Rose alarm glow** (`0 0 14px rgba(251, 113, 133, 0.35)`): error toasts only.
-- **Live armed glow** (`filter: drop-shadow(0 0 12px rgba(248, 113, 113, 0.65))` on the planet core; `0 0 16px rgba(248, 113, 113, 0.55), inset 0 0 8px rgba(248, 113, 113, 0.35)` on the power button; `text-shadow: 0 0 8px rgba(248, 113, 113, 0.6)` on the state text): the hot state of a live wallet, present only while wallet and universe are both armed (The Two-Key Rule).
+- **Live armed glow** (`filter: drop-shadow(0 0 12px rgba(248, 113, 113, 0.65))` on the planet core; `0 0 16px rgba(248, 113, 113, 0.55), inset 0 0 8px rgba(248, 113, 113, 0.35)` on the power button; `text-shadow: 0 0 8px rgba(248, 113, 113, 0.6)` on the state text): the hot state of a live wallet, present only while the wallet is armed (The Power-Button Rule).
 
 ### Named Rules
 **The Glow-Is-Meaning Rule.** A glow is a statement that this object is currently interesting (hovered, linked to the thing under the cursor, or floating above the sky). Nothing glows at rest except the brand wordmark — and an armed live planet, whose steady red glow is the danger light, not decoration.
@@ -251,22 +242,21 @@ Borders are always 1px hairlines (see The One Hairline Rule); no shape carries m
 ### Galaxy Nodes (the signature system)
 The force-directed sky in `frontend/js/galaxy.js`, drawn over a seeded 160-star field (soft-nebula dots, LCG seed so it never re-rolls). A bottom-left legend names the five species: paper planet, live planet, trader moon, position, candidate.
 - **Wallet planet:** dashed outer ring (`r+6`, rgba(196,181,253,0.25), dash 3 5) around a core filled with the shared radial gradient `#planet-fill` (#312057 → #181129 → #0b0912, light source at 38%/32%) and a 2px soft-nebula rim. Radius 11–38px scales with √equity (`r = 11 + min(√equity × 3.4, 27)`) — dwarf planets for thin wallets, giants for heavy ones. Uppercase Chakra Petch label 18px below. Planets are pinned (`fx/fy`) — the fixed geography of the sky.
-- **Live planet:** the same body in the live-red family. Disarmed it is dark — `#planet-fill-live` (#4c1622 → #220b10 → #0e0608), rim #7f2434, ring rgba(248,113,113,0.22), label suffixed "· DARK". When the wallet *and* the universe are armed it goes hot: `#planet-fill-armed` (#9f1f35 → #4c1220 → #1c070c), live-red rim, ring rgba(248,113,113,0.45), and the 12px red drop-glow (The Two-Key Rule).
+- **Live planet:** the same body in the live-red family. Disarmed it is dark — `#planet-fill-live` (#4c1622 → #220b10 → #0e0608), rim #7f2434, ring rgba(248,113,113,0.22), label suffixed "· DARK". When the wallet is armed it goes hot: `#planet-fill-armed` (#9f1f35 → #4c1220 → #1c070c), live-red rim, ring rgba(248,113,113,0.45), and the 12px red drop-glow (The Power-Button Rule).
 - **Planet decorations:** every planet rolls a stable set of dressings — tilted ring (42%, with a 35% chance of a thin outer companion), moonlet (32%), equator band (38%), polar cap (25%) — from a mulberry32 PRNG seeded by an FNV-1a hash of the wallet id, so the same wallet always shows the same face across renders and sessions. Drawn at base radius 20 and scaled with the body (`scale(r/20)`); rings are soft-nebula rgba(196,181,253,0.35) (live planets tint them rgba(248,113,113,0.35)), bands and caps are faint ink-white washes, moonlets faint-ink dots.
 - **Trader moon:** nebula core (radius 6–12 by score) with a faint halo ring and a cyan win-rate arc (2.5px, round caps) sweeping `win_rate × 360°` around it. Labeled with the shortened address. Moons orbit their assigned planet.
-- **Position satellite:** a dot sized by √market-value (6–22px), filled `gain` or `loss` at 0.85 opacity, symbol label above; linked to its wallet by a faint cyan line and to its source trader when followed.
+- **Position satellite:** a fixed 7px dot (value lives in the inspector, not the geometry), filled `gain` or `loss` at 0.85 opacity, symbol label above. It orbits the moon of the trader it copies (the wallet planet if that moon has left the sky) at radius 34px (+12px per extra satellite on the same moon), one slow pass ≈ 31s, dragging a **comet tail**: three arc segments along the orbit path (3/2/1.2px wide at 0.32/0.16/0.07 opacity, round caps) stroked in the satellite's own PnL color. The tail hangs off the satellite's actual bearing so simulation nudges never detach it.
 - **Candidate speck:** 2.6px faint-ink dot at 0.7 opacity drifting in the upper band. **Rejected ember:** 3.2px #3c3654 dot in the lower band, rejection reason on hover (`<title>`).
-- **Links:** assignment lines purple rgba(168,85,247,0.35) 1.2px; position lines cyan rgba(34,211,238,0.28) 1px.
+- **Links:** assignment lines (moon → planet) purple rgba(168,85,247,0.35) 1.2px. Positions carry no tether lines — their orbit and tail say who they belong to.
 - Every node is clickable (opens the inspector) and hover-lights (`.lit` adds a purple drop-glow); position hover lights the matching token chip and vice versa.
 
 ### Buttons
 - **Ghost** (`.ghost-btn`): transparent, purple hairline border, soft-nebula uppercase 10px label, 3px radius; hover fills rgba(168,85,247,0.18) and brightens to ink. The default rail/utility action. As a rail toggle, `aria-pressed="true"` fills rgba(168,85,247,0.25) with a full nebula border.
 - **Commit** (`.commit-btn`): purple keycap — gradient #8b5cf6 → nebula-deep, 4px radius, ink text, `0 2px 0 #3b1478` ledge, presses down 2px on `:active` (90ms ease-out). The affirmative form action (REGISTER WALLET).
 - **Danger** (`.danger-btn`): the commit keycap in rose — gradient #f43f5e → #9f1239, ledge #5f0a22. Destructive inspector actions (STOP COPYING, CLOSE POSITION NOW).
-- **Arm key** (`.arm-key`): the one orange object. Orange keycap gradient (#fb923c → #f97316), near-black text (#1a0d02), `0 3px 0 #9a3d07` ledge. Requires a deliberate 1200ms press-and-hold: a white 45%-opacity fill sweeps left-to-right as progress; releasing early cancels. When the universe is armed, the key re-skins to the purple family (soft-nebula gradient, #4c1d95 ledge, #140a26 text) and reads HOLD TO DISARM. Works by pointer and by held Enter/Space.
 
 ### Power Button
-The per-wallet arm control, rendered only in live-wallet inspectors: a 46px circle (2px #3d2a33 border, dark red radial fill #221318 → #120a0d) holding a 20px drawn power glyph (2-stroke, round caps) in dim #6b4a52. Toggled on, everything goes live-red: border and glyph #f87171, hot radial fill #57121e → #200a0f, a 16px outer glow with an inset ember. Beside it the power-state label (Chakra Petch 11px, 0.16em tracking) reads "ARMED — trades when universe is armed" (live-red, text-glow) or "DARK — holds fire" (faint ink). It tracks `aria-pressed` and arms only this wallet; real execution still requires the universe arm key (The Two-Key Rule).
+The per-wallet arm control, rendered only in live-wallet inspectors: a 46px circle (2px #3d2a33 border, dark red radial fill #221318 → #120a0d) holding a 20px drawn power glyph (2-stroke, round caps) in dim #6b4a52. Toggled on, everything goes live-red: border and glyph #f87171, hot radial fill #57121e → #200a0f, a 16px outer glow with an inset ember. Beside it the power-state label (Chakra Petch 11px, 0.16em tracking) reads "ARMED — signs real transactions" (live-red, text-glow) or "DARK — holds fire" (faint ink). It tracks `aria-pressed`; arming is keystore-gated and refused in dev mode, disarming always allowed (The Power-Button Rule).
 
 ### Wallet Cards
 5px-radius cards on a diagonal purple-tinted gradient with the standard hairline; hover or `.lit` promotes the border to nebula plus glow. Anatomy: Chakra Petch name row with a status tag — PAPER, or LIVE · ARMED / LIVE · DARK for live wallets (peach #f8c9a4) — 16px tabular equity with dim USD suffix, then the **fuel bar** — an 8px three-segment gauge: solid nebula for free cash, a 45° purple-on-deep-violet candy stripe (`repeating-linear-gradient(45deg, #7c3aed 0 4px, #4c1d95 4px 8px)`) for held reserve, cyan for value in positions — and a dim meta row (open count, reserve amount). Cards are keyboard-focusable buttons opening the wallet inspector.
@@ -287,13 +277,13 @@ The add-wallet flow: a full-height 340px panel sliding from the left over a rgba
 Red Hat Mono 12px on `space-raised`, hairline border, 3px radius, 7×8px padding, faint-ink placeholders. Focus is the global ring: 2px nebula outline, 2px offset. Errors are rose text below the field, never a red border.
 
 ### Status Indicators
-- **Mode badge:** tracked-out Chakra Petch pill-adjacent badge (3px radius) reading the universe state; SAFE = purple border on purple tint; ARMED = orange border, peach text (#ffd9bd), orange tint plus text-glow.
+- **Status badge:** tracked-out Chakra Petch pill-adjacent badge (3px radius) that only ever warns: … on faint ink while state is unknown (pre-hydration), DEV in cyan while the relaxed dev gates are on. Hidden in normal operation — live risk is read per wallet, not from a global mode.
 - **Link status:** 8px dot plus 10px tracked label — faint/LINKING, cyan glowing dot/STREAM LIVE, rose/RELINKING.
 - **Scan banner:** floating 20px pill at stage top with a 2.2s pulsing purple dot; visible only while no trader is followed; copy states the doctrine ("Strict filters mean admission takes time; that is the point.").
 - **Toasts:** panel-space cards bottom-right (above the chip wall), nebula border and glow (rose for errors), 260ms rise-in, auto-dismiss at 5s.
 
 ### Navigation
-There is no navigation — the cockpit is one screen. The command bar carries identity (glowing wordmark plus orbit mark), the three fleet readouts, the narrow-width rail toggles, link status, mode badge, and the arm key. Comprehension is spatial, not hierarchical.
+There is no navigation — the cockpit is one screen. The command bar carries identity (glowing wordmark plus orbit mark), the three fleet readouts, the narrow-width rail toggles, link status, and the status badge. Comprehension is spatial, not hierarchical.
 
 ## Do's and Don'ts
 
@@ -303,15 +293,15 @@ There is no navigation — the cockpit is one screen. The command bar carries id
 - **Do** honor `prefers-reduced-motion` fully: no orbit timer, no drift restart (alphaDecay 0.3, instant settles), no pulse/entrance animations, all transitions zeroed.
 - **Do** cross-highlight bidirectionally with the shared `.lit` class: chip ↔ satellite, wallet card ↔ planet, roster row ↔ moon. Any new representation of an existing object must light its counterpart.
 - **Do** open the same inspector from every representation of an object, and put the intervention button (danger keycap) inside it — the operator acts on the object, never in a settings page.
-- **Do** make dangerous state changes deliberate: mode switching is a 1200ms hold with visible progress and early-release cancel.
-- **Do** keep live wallets dark until both keys turn: the red planet, power button, and state text glow only when the wallet is armed *and* the universe is armed (The Two-Key Rule).
+- **Do** make dangerous state changes deliberate: arming a live wallet is a keystore-gated act on that wallet's own power button, refused outright in dev mode.
+- **Do** keep live wallets dark until armed: the red planet, power button, and state text glow only while the wallet is armed (The Power-Button Rule).
 - **Do** debounce galaxy re-layout on streaming deltas (200ms) while rendering panels immediately; snapshots update the galaxy at once.
 - **Do** keep Escape as the universal dismiss: inspector, drawer, and narrow-width rail swaps all clear.
 - **Do** theme the browser surfaces purple: `::selection` on nebula-deep, thin nebula-deep scrollbars, nebula caret, and the 2px nebula `:focus-visible` ring with 2px offset everywhere.
 
 ### Don't:
 - **Don't** introduce sidebar-and-stat-cards dashboard furniture (KPI grids, chart panels, breadcrumbs, nav menus). The galaxy plus its rails is the entire information architecture.
-- **Don't** use orange outside universe-arm surfaces, live-red outside live-wallet identity, green for gains, or red for losses (losses are always rose #fb7185). The palette is closed: purple structure, cyan/rose verdicts, one orange key, one live red.
+- **Don't** use peach outside live-money warnings, live-red outside live-wallet identity, green for gains, or red for losses (losses are always rose #fb7185). The palette is closed: purple structure, cyan/rose verdicts, one warning peach, one live red.
 - **Don't** squish panels at narrow widths — swap whole panels via the command-bar toggles per The Whole-Panel Rule.
 - **Don't** let the page scroll. New content goes inside a scrolling panel or behind a toggle; the cockpit frame (command bar, stage, chip wall) stays fixed.
 - **Don't** use icon fonts, emoji, or filled glyph icons; every icon is a drawn 1.5-stroke `currentColor` SVG (The Drawn-Stroke Rule).

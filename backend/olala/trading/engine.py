@@ -1,8 +1,8 @@
 """Trading engine: turns copy signals into risk-gated executions.
 
 The engine is the only component allowed to call an executor. It selects
-paper or live execution per order: live requires the operator-armed live
-mode AND a real wallet — in every other case orders are paper. It never
+paper or live execution per order: live requires a real wallet the
+operator has armed — in every other case orders are paper. It never
 originates trades; it only follows signals and the panic stop.
 """
 
@@ -44,15 +44,12 @@ class TradingEngine:
         self._paper_executor = paper_executor
         self._live_executor = live_executor
 
-    def _universe_armed(self) -> bool:
-        return self._store.config.mode == "live"
-
     def _wallet_may_trade(self, wallet: Wallet) -> bool:
-        """Paper wallets always simulate; live wallets trade only when the
-        universe is armed AND the wallet itself is armed."""
+        """Paper wallets always simulate; live wallets trade only while
+        the operator has armed them."""
         if wallet.is_paper:
             return True
-        return self._universe_armed() and wallet.armed
+        return wallet.armed
 
     def _executor_for(self, wallet: Wallet) -> TradeExecutor:
         if wallet.is_paper:
@@ -78,8 +75,7 @@ class TradingEngine:
             return
         if not self._wallet_may_trade(wallet):
             self._reject(signal, wallet,
-                         "live wallet is dark — arm it (and the universe) "
-                         "to trade")
+                         "live wallet is dark — arm it to trade")
             return
         try:
             if signal.side is TradeSide.BUY:

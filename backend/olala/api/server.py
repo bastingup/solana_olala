@@ -86,8 +86,9 @@ class AppContext:
             TraderSubscriber(self.provider, self.registry,
                              on_activity=follower.poll_now),
         ]
-        logger.info("application context ready (provider: %s, mode: %s)",
-                    self.provider.name, config.mode)
+        logger.info("application context ready (provider: %s%s)",
+                    self.provider.name,
+                    ", dev mode" if config.dev_mode else "")
 
     # -- cross-service policies -------------------------------------------
 
@@ -117,7 +118,6 @@ class AppContext:
     def snapshot(self) -> dict:
         snapshot = self.portfolio.snapshot()
         snapshot.update({
-            "mode": self.store.config.mode,
             "dev_mode": self.store.config.dev_mode,
             "keystore": {"exists": self.keystore.exists,
                          "locked": self.keystore.is_locked},

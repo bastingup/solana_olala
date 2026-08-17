@@ -26,28 +26,24 @@ export function renderCommand(state, totals) {
     : totals.upnl < 0 ? "loss" : ""}`;
   priceEl.textContent = state.solPrice ? fmtUsd(state.solPrice) : "—";
 
+  // The badge only ever warns: "…" while state is unknown, DEV while the
+  // relaxed dev gates are on. In normal operation it stays hidden — live
+  // risk is read per wallet (armed/dark), not from a global mode.
   const badge = document.getElementById("mode-badge");
   if (!state.hydrated) {
+    badge.hidden = false;
     badge.dataset.mode = "unknown";
     badge.textContent = "…";
     badge.title = "Waiting for the backend snapshot.";
+  } else if (state.devMode) {
+    badge.hidden = false;
+    badge.dataset.mode = "dev";
+    badge.textContent = "DEV";
+    badge.title = "Dev mode: relaxed gates for testing. "
+      + "Arming live wallets is locked out.";
   } else {
-    badge.dataset.mode = state.devMode ? "dev" : state.mode;
-    badge.textContent = state.devMode
-      ? "DEV" : state.mode === "live" ? "ARMED" : "SAFE";
-    badge.title = state.devMode
-      ? "Dev mode: relaxed gates for testing. Live trading is locked out."
-      : state.mode === "live"
-        ? "Universe armed: armed live wallets sign real transactions. Paper wallets keep simulating."
-        : "Universe safe: nothing signs. Paper wallets keep simulating.";
+    badge.hidden = true;
   }
-
-  const armKey = document.getElementById("arm-key");
-  armKey.dataset.armed = String(state.mode === "live");
-  armKey.disabled = Boolean(state.devMode) || !state.hydrated;
-  armKey.querySelector(".arm-text").textContent = state.devMode
-    ? "LOCKED IN DEV MODE"
-    : state.mode === "live" ? "HOLD TO DISARM" : "HOLD TO ARM LIVE";
 
   const link = document.getElementById("link-status");
   link.dataset.state = state.connected;

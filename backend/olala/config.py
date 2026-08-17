@@ -130,10 +130,9 @@ class PaperConfig:
 
 @dataclass
 class AppConfig:
-    mode: str = "paper"  # "paper" | "live"
     # Dev mode: bypass the trader-admission and token-safety gates so
     # paper activity flows immediately (you will be copying bots and
-    # trash — that is the point). Live trading refuses to arm while on.
+    # trash — that is the point). Live wallets refuse to arm while on.
     dev_mode: bool = False
     server: ServerConfig = field(default_factory=ServerConfig)
     chain: ChainConfig = field(default_factory=ChainConfig)
@@ -166,15 +165,6 @@ class ConfigStore:
         """Apply a partial update to mutable sections and persist it."""
         with self._lock:
             for section, values in patch.items():
-                if section == "mode":
-                    if values not in ("paper", "live"):
-                        raise ValueError(f"invalid mode: {values!r}")
-                    if values == "live" and self._config.dev_mode:
-                        raise ValueError(
-                            "dev_mode is on — live trading is locked out "
-                            "because dev configs relax the safety screens")
-                    self._config.mode = values
-                    continue
                 if section not in AppConfig._MUTABLE_SECTIONS:
                     raise ValueError(f"section not updatable: {section!r}")
                 target = getattr(self._config, section)
@@ -192,8 +182,8 @@ class ConfigStore:
         config = AppConfig()
         if self._path.exists():
             raw = yaml.safe_load(self._path.read_text()) or {}
-            if "mode" in raw:
-                config.mode = str(raw["mode"])
+            # A legacy "mode" key may linger in older config files; it is
+            # ignored here and dropped on the next save.
             if "dev_mode" in raw:
                 config.dev_mode = bool(raw["dev_mode"])
             for section in ("server", "chain", "filters", "risk",

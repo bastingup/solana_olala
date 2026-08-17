@@ -1,7 +1,7 @@
 # Project — technical documentation
 
 Solana-olala: a fully automated, risk-gated copy-trading system for Solana
-DEXes. Single operator, localhost only, paper mode by default. See
+DEXes. Single operator, localhost only, paper wallets by default. See
 [[Claude]] for session instructions and [[Tasks]] for open work.
 
 ## Architecture
@@ -48,11 +48,11 @@ open the browser.
 | `risk/atr.py` | 1-minute candles from price marks; Wilder ATR(14); trailing stop = peak − 3.5·ATR; no stop until warm. |
 | `trading/executor.py` | `TradeExecutor` (ABC) → `PaperExecutor` (liquidity-derived slippage model, flat fee) / `LiveJupiterExecutor` (quote → build → sign via keystore → send). |
 | `trading/portfolio.py` | `PortfolioManager`: wallets, positions, balances, exposure snapshots, all mutations persisted + broadcast. |
-| `trading/engine.py` | `TradingEngine`: the only caller of executors. Buy: market data → safety → exposure → risk verdict → fill. Sell: full close on trader exit. Panic/manual closes. Executor choice: live only when mode=live AND wallet is real. |
+| `trading/engine.py` | `TradingEngine`: the only caller of executors. Buy: market data → safety → exposure → risk verdict → fill. Sell: full close on trader exit. Panic/manual closes. Executor choice: live only for an armed live wallet. |
 | `trading/follower.py` | `FollowDaemon`: per-trader signature polling against `follow_cursor`, oldest-first replay of new swaps into `CopySignal`s. First contact arms the cursor without replaying history. |
 | `trading/marker.py` | `MarkDaemon`: re-prices open positions, feeds ATR, trails stops, triggers panic closes, derives SOL/USD, emits `portfolio_tick`. |
 | `security/keystore.py` | scrypt(passphrase, salt) → Fernet; file `backend/keystore.enc` (0600). Accepts base58 or solana-keygen JSON secrets. Keys never leave backend memory; never returned by any API. |
-| `api/rest.py` | Actions: keystore unlock, wallet add (paper/live), trader unfollow, position close, config get/put, mode switch (live requires unlocked keystore + live wallet), state snapshot, fills. |
+| `api/rest.py` | Actions: keystore unlock, wallet add (paper/live), wallet arm/disarm (arming requires unlocked keystore holding the key; refused in dev_mode), trader unfollow, position close, config get/put, state snapshot, fills. |
 | `api/stream.py` | `/ws`: snapshot on connect, then every event; ping frames on quiet. |
 | `api/server.py` | `AppContext` composition root: builds everything, wires wallet assignment (least-loaded, random tie-break), serves `frontend/` statically. |
 
@@ -61,7 +61,7 @@ open the browser.
 `snapshot`, `portfolio_tick`, `wallet_added/update`, `position_opened/
 resized/closed`, `trader_candidate/admitted/rejected/retired`,
 `discovery_scan`, `copy_signal`, `risk_rejected`, `execution_error`,
-`trade_executed`, `mode_changed`, `config_changed`, `keystore_unlocked`,
+`trade_executed`, `config_changed`, `keystore_unlocked`,
 `ping`. Payloads are the domain objects' `to_dict()` forms.
 
 ## Frontend (`frontend/`)
@@ -73,7 +73,7 @@ starmap: planets pinned, moons via orbit links, satellites linked to
 planet+moon, candidates top band, rejected embers bottom band; layout
 settled synchronously with 150 manual ticks before paint), `panels.js`
 (command bar, wallet rail, feed, roster, chip wall), `app.js` (wiring,
-inspector, drawer, hold-to-arm key). Design contract: first comment in
+inspector, drawer, per-wallet power button). Design contract: first comment in
 `index.html`. Fonts: Chakra Petch (display) + Red Hat Mono (data) via
 Google Fonts. The design system is recorded in `DESIGN.md` at repo root.
 
@@ -96,7 +96,7 @@ Three independent checks, cheapest first:
 2. **The log.** `discovery tick:` lines each scan interval, and one
    `candidate <addr>… scanned N signatures, M swaps, history depth Xd of
    90d needed` per candidate advanced. Provider is named at boot:
-   `application context ready (provider: helius|public-rpc, mode: …)`.
+   `application context ready (provider: helius|public-rpc[, dev mode])`.
 3. **The database** — ground truth:
    ```bash
    sqlite3 backend/olala.db \
@@ -132,19 +132,18 @@ push within seconds, the interval poll is only a safety net — raising
 usage inside the free tier. Left at 12 by default (maximum fidelity if
 push ever drops); this is the operator's call.
 
-## Arming model (side-by-side paper/live universes)
+## Arming model (per-wallet, single switch)
 
 Paper and live wallets coexist in one universe. Paper wallets ALWAYS
-simulate — nothing arms or disarms them. Live wallets are red planets:
-they trade only when BOTH switches are on:
+simulate — nothing arms or disarms them. There is NO universe-level
+mode (operator removed it 2026-08-17). Live wallets are red planets
+with exactly one switch:
 
-1. **Universe arm** — `mode: live` via the hold-to-arm key
-   (`POST /api/mode`, guarded: unlocked keystore + ≥1 live wallet).
-   Badge reads SAFE / ARMED.
-2. **Per-wallet arm** — `POST /api/wallets/<id>/arm {armed: bool}`,
-   toggled by the power button in the wallet inspector. Arming requires
-   an unlocked keystore holding that wallet's key; disarming is always
-   allowed. Persisted in the wallets table (`armed` column).
+- **Per-wallet arm** — `POST /api/wallets/<id>/arm {armed: bool}`,
+  toggled by the power button in the wallet inspector. Arming requires
+  an unlocked keystore holding that wallet's key and is refused while
+  `dev_mode` is on (dev configs relax the safety screens); disarming is
+  always allowed. Persisted in the wallets table (`armed` column).
 
 A disarmed ("dark") live wallet neither opens nor closes positions —
 signals are rejected with a visible reason, and closes emit
@@ -181,8 +180,8 @@ system degrades to polling, never to silence.
 ## Configuration
 
 `backend/config.yaml` (gitignored, created on first change). Everything
-under `filters`, `risk`, `discovery`, `follow`, plus `mode`, is mutable at
-runtime via `PUT /api/config` / `POST /api/mode` and persists. Seed mints
+under `filters`, `risk`, `discovery`, `follow` is mutable at
+runtime via `PUT /api/config` and persists. Seed mints
 for discovery: JUP, JTO, PYTH, RAY, ORCA, WIF, BONK (editable).
 
 ## Known limitations (deliberate MVP cuts)

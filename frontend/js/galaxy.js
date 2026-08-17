@@ -10,6 +10,13 @@ import { fmtPct, shortAddr } from "./format.js";
 const REDUCED_MOTION =
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// Position satellites orbit their trader moon (slowly — a full pass takes
+// about half a minute) and drag a fading comet tail along the orbit path.
+const SATELLITE_ORBIT_SPEED = 0.0002;   // rad/ms
+const SATELLITE_ORBIT_BASE_R = 34;      // px around the moon
+const SATELLITE_ORBIT_GAP = 12;         // extra radius per extra satellite
+const TRAIL_SEGMENT_SWEEP = 0.5;        // rad per fading tail segment
+
 export class Galaxy {
   constructor(svgElement, { onInspect, onHoverMint, onReassign }) {
     this._svg = d3.select(svgElement);
@@ -35,6 +42,7 @@ export class Galaxy {
     this._root = this._svg.append("g").attr("class", "galaxy-root");
     this._starfield = this._root.append("g");
     this._linkLayer = this._root.append("g");
+    this._trailLayer = this._root.append("g");
     this._nodeLayer = this._root.append("g");
 
     this._svg.call(
@@ -62,19 +70,28 @@ export class Galaxy {
   }
 
   // Moons genuinely orbit: their anchor angle advances slowly around the
-  // planet, and the low-energy simulation carries satellites along.
+  // planet, and the low-energy simulation carries satellites along. The
+  // same clockwork moves position satellites around their trader moon.
   _advanceOrbits(elapsed) {
     const nodes = this._simulation.nodes();
     let moved = false;
     for (const node of nodes) {
-      if (node.type !== "trader" || !node.orbit) continue;
-      const planet = this._memory.get(`w:${node.orbit.walletId}`);
-      if (!planet) continue;
-      const radius = this._orbitR || 110;
-      const angle = node.orbit.base + elapsed * 0.00008;
-      node.tx = (planet.fx ?? planet.x) + Math.cos(angle) * radius;
-      node.ty = (planet.fy ?? planet.y) + Math.sin(angle) * radius;
-      moved = true;
+      if (node.type === "trader" && node.orbit) {
+        const planet = this._memory.get(`w:${node.orbit.walletId}`);
+        if (!planet) continue;
+        const radius = this._orbitR || 110;
+        const angle = node.orbit.base + elapsed * 0.00008;
+        node.tx = (planet.fx ?? planet.x) + Math.cos(angle) * radius;
+        node.ty = (planet.fy ?? planet.y) + Math.sin(angle) * radius;
+        moved = true;
+      } else if (node.type === "position" && node.orbitCenter) {
+        const center = this._memory.get(node.orbitCenter);
+        if (!center) continue;
+        const angle = node.orbitBase + elapsed * SATELLITE_ORBIT_SPEED;
+        node.tx = (center.fx ?? center.x) + Math.cos(angle) * node.orbitDist;
+        node.ty = (center.fy ?? center.y) + Math.sin(angle) * node.orbitDist;
+        moved = true;
+      }
     }
     if (moved && this._simulation.alpha() < 0.03) {
       this._simulation.alpha(0.04).restart();
@@ -102,7 +119,6 @@ export class Galaxy {
 
   update(state) {
     const { w, h } = this._size();
-    this._universeArmed = state.mode === "live";
     // Orbit radius shrinks with the stage so moons and labels never cross
     // a neighboring planet on narrow screens.
     this._orbitR = Math.max(70, Math.min(110, w * 0.16));
@@ -127,7 +143,7 @@ export class Galaxy {
         r: 11 + Math.min(Math.sqrt(wallet.equity_sol || 0) * 3.4, 27),
         tx, ty, anchor: 0.9,
         live: !wallet.is_paper,
-        armedGlow: !wallet.is_paper && wallet.armed && this._universeArmed,
+        armedGlow: !wallet.is_paper && wallet.armed,
       });
       planet.fx = tx;
       planet.fy = ty;
@@ -176,22 +192,31 @@ export class Galaxy {
       }));
     });
 
+    // Positions are satellites in orbit around the moon of the trader
+    // they copy (their wallet's planet when that moon has left the sky),
+    // stacked outward when one moon carries several.
+    const satelliteCount = new Map();
     openPositions.forEach((position) => {
+      const centerId =
+        state.traders.get(position.trader)?.status === "followed"
+          ? `t:${position.trader}` : `w:${position.wallet_id}`;
+      const index = satelliteCount.get(centerId) || 0;
+      satelliteCount.set(centerId, index + 1);
+      const base = index * 2.4 + 0.7;
+      const dist = SATELLITE_ORBIT_BASE_R + index * SATELLITE_ORBIT_GAP;
+      const center = this._memory.get(centerId);
       nodes.push(this._node({
         id: `p:${position.id}`, type: "position", data: position,
         // Fixed size: value lives in the inspector, not the geometry
         // (operator decision — sized satellites read as other objects).
         r: 7,
-        tx: w * 0.5, ty: h * 0.5, anchor: 0.01,
+        orbitCenter: centerId, orbitBase: base, orbitDist: dist,
+        tx: (center ? (center.fx ?? center.tx) : w * 0.5)
+          + Math.cos(base) * dist,
+        ty: (center ? (center.fy ?? center.ty) : h * 0.5)
+          + Math.sin(base) * dist,
+        anchor: 0.35,
       }));
-      links.push({ source: `p:${position.id}`,
-                   target: `w:${position.wallet_id}`,
-                   kind: "pos", distance: 70 });
-      if (state.traders.get(position.trader)?.status === "followed") {
-        links.push({ source: `p:${position.id}`,
-                     target: `t:${position.trader}`,
-                     kind: "pos", distance: 90 });
-      }
     });
 
     const valid = new Set(nodes.map((n) => n.id));
@@ -232,6 +257,21 @@ export class Galaxy {
       .data(links, (d) => `${d.source.id || d.source}|${d.target.id || d.target}`)
       .join("line")
       .attr("class", (d) => d.kind === "assign" ? "assign-link" : "pos-link");
+
+    // One comet tail per orbiting satellite: three arc segments fading
+    // out behind it, colored like the satellite itself.
+    this._trails = this._trailLayer.selectAll("g.pos-trail")
+      .data(nodes.filter((d) => d.type === "position" && d.orbitCenter),
+            (d) => d.id)
+      .join((enter) => {
+        const group = enter.append("g").attr("class", "pos-trail");
+        for (const segment of [3, 2, 1]) {
+          group.append("path").attr("class", `trail-${segment}`);
+        }
+        return group;
+      })
+      .attr("stroke", (d) => (d.data.unrealized_pnl_sol || 0) >= 0
+        ? "var(--gain)" : "var(--loss)");
 
     const groups = this._nodeLayer.selectAll("g.galaxy-node")
       .data(nodes, (d) => d.id)
@@ -326,6 +366,29 @@ export class Galaxy {
     }
     if (this._nodes) {
       this._nodes.attr("transform", (d) => `translate(${d.x},${d.y})`);
+    }
+    if (this._trails) {
+      const memory = this._memory;
+      this._trails.each(function (d) {
+        const center = memory.get(d.orbitCenter);
+        if (!center) return;
+        const cx = center.fx ?? center.x;
+        const cy = center.fy ?? center.y;
+        // The tail hangs off the satellite's ACTUAL bearing, so it stays
+        // glued even when collision forces nudge it off the ideal circle.
+        const radius = Math.hypot(d.x - cx, d.y - cy);
+        // d3.arc measures angles from 12 o'clock; atan2 from 3 o'clock.
+        const head = Math.atan2(d.y - cy, d.x - cx) + Math.PI / 2;
+        const group = d3.select(this)
+          .attr("transform", `translate(${cx},${cy})`);
+        for (let segment = 0; segment < 3; segment++) {
+          group.select(`.trail-${segment + 1}`).attr("d", d3.arc()({
+            innerRadius: radius, outerRadius: radius,
+            startAngle: head - TRAIL_SEGMENT_SWEEP * (segment + 1),
+            endAngle: head - TRAIL_SEGMENT_SWEEP * segment,
+          }));
+        }
+      });
     }
   }
 

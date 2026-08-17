@@ -3,9 +3,9 @@
 ``TradeExecutor`` is the abstract order path; ``PaperExecutor`` simulates
 fills locally with a liquidity-derived slippage model, and
 ``LiveJupiterExecutor`` is the real Jupiter swap path. Live execution is
-dormant by default: it is only ever selected when the operator has armed
-live mode AND the wallet is a real (non-paper) wallet AND the keystore is
-unlocked.
+dormant by default: it is only ever selected for a real (non-paper)
+wallet the operator has armed, which itself requires an unlocked
+keystore holding that wallet's key.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ class PaperExecutor(TradeExecutor):
 
 
 class LiveJupiterExecutor(TradeExecutor):
-    """Real execution through Jupiter. Selected only in armed live mode."""
+    """Real execution through Jupiter. Selected only for armed live wallets."""
 
     def __init__(self, jupiter: JupiterClient, provider: RpcProvider,
                  keystore: EncryptedKeystore) -> None:

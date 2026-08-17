@@ -50,7 +50,7 @@ def test_snapshot_then_live_events(live_server):
         snapshot = json.loads(ws.receive(timeout=5))
         assert snapshot["type"] == "snapshot"
         data = snapshot["data"]
-        assert data["mode"] == "paper"
+        assert data["dev_mode"] is False
         assert len(data["wallets"]) == 3
         assert data["keystore"]["locked"] is True
 
@@ -74,10 +74,10 @@ def test_two_clients_both_receive(live_server):
         json.loads(ws1.receive(timeout=5))
         json.loads(ws2.receive(timeout=5))
         time.sleep(0.1)
-        ctx.bus.publish("mode_changed", {"mode": "paper"})
+        ctx.bus.publish("wallet_update", {"id": "w1"})
         for ws in (ws1, ws2):
             event = json.loads(ws.receive(timeout=5))
-            assert event["type"] == "mode_changed"
+            assert event["type"] == "wallet_update"
     finally:
         ws1.close()
         ws2.close()

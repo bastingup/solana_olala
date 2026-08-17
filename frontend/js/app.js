@@ -141,7 +141,7 @@ function openInspector(node) {
           </svg>
         </button>
         <span class="power-state ${data.armed ? "on" : ""}">
-          ${data.armed ? "ARMED — trades when universe is armed" : "DARK — holds fire"}</span>
+          ${data.armed ? "ARMED — signs real transactions" : "DARK — holds fire"}</span>
       </div>`}`;
   } else if (type === "trader" || type === "rejected" || type === "candidate") {
     const stats = data.stats || {};
@@ -187,7 +187,7 @@ function openInspector(node) {
         } else if (action.dataset.action === "toggle-arm") {
           const updated = await api.armWallet(node.data.id, !node.data.armed);
           showToast(updated.armed
-            ? `${updated.label} armed — it trades when the universe is armed.`
+            ? `${updated.label} armed — it signs real transactions.`
             : `${updated.label} disarmed — dark planet, holds fire.`);
           openInspector({ ...node, data: updated });
           return;
@@ -386,55 +386,6 @@ document.getElementById("unlock-form").addEventListener("submit", async (event) 
     showToast(error.message, true);
   }
 });
-
-// -- arm key: deliberate hold to switch mode ------------------------------
-
-const armKey = document.getElementById("arm-key");
-const armFill = armKey.querySelector(".arm-fill");
-const HOLD_MS = 1200;
-let holdStart = 0;
-let holdFrame = null;
-
-function holdTick(now) {
-  const progress = Math.min((now - holdStart) / HOLD_MS, 1);
-  armFill.style.width = `${progress * 100}%`;
-  if (progress >= 1) {
-    endHold();
-    toggleMode();
-  } else {
-    holdFrame = requestAnimationFrame(holdTick);
-  }
-}
-
-function startHold() {
-  holdStart = performance.now();
-  holdFrame = requestAnimationFrame(holdTick);
-}
-
-function endHold() {
-  cancelAnimationFrame(holdFrame);
-  armFill.style.width = "0%";
-}
-
-async function toggleMode() {
-  const target = store.state.mode === "live" ? "paper" : "live";
-  try {
-    await api.setMode(target);
-  } catch (error) {
-    showToast(error.message, true);
-  }
-}
-
-armKey.addEventListener("pointerdown", startHold);
-armKey.addEventListener("pointerup", endHold);
-armKey.addEventListener("pointerleave", endHold);
-armKey.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    if (!holdFrame) startHold();
-  }
-});
-armKey.addEventListener("keyup", endHold);
 
 // -- go ------------------------------------------------------------------
 

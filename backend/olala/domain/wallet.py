@@ -91,7 +91,7 @@ class LiveSolanaWallet(SolanaWallet):
     """A real wallet whose key lives in the encrypted keystore.
 
     The wallet object itself never holds key material; it asks the keystore
-    for a signer only at execution time, and only in live mode.
+    for a signer only at execution time, and only while armed.
     """
 
     def __init__(self, wallet_id: str, label: str, address: str,

@@ -28,8 +28,9 @@ def main() -> int:
 
     server = ctx.store.config.server
     logging.getLogger(__name__).info(
-        "Solana-olala listening on http://%s:%d (mode: %s)",
-        server.host, server.port, ctx.store.config.mode)
+        "Solana-olala listening on http://%s:%d%s",
+        server.host, server.port,
+        " (dev mode)" if ctx.store.config.dev_mode else "")
     app.run(host=server.host, port=server.port, threaded=True,
             use_reloader=False)
     return 0

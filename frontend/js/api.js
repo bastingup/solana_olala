@@ -30,6 +30,5 @@ export const api = {
     request("POST", `/api/traders/${address}/unfollow`),
   closePosition: (positionId) =>
     request("POST", `/api/positions/${positionId}/close`),
-  setMode: (mode) => request("POST", "/api/mode", { mode }),
   updateConfig: (patch) => request("PUT", "/api/config", patch),
 };

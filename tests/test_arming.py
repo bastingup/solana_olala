@@ -1,4 +1,4 @@
-"""Side-by-side paper/live universe: per-wallet arming and the gates."""
+"""Side-by-side paper/live wallets: per-wallet arming and the gates."""
 
 import pytest
 from solders.keypair import Keypair
@@ -70,35 +70,27 @@ def test_dark_wallet_does_not_trade(live_world):
     assert live_world.portfolio.open_positions(live_world.wallet.id) == []
 
 
-def test_armed_wallet_without_armed_universe_does_not_trade(live_world):
+def test_armed_wallet_trades_live(live_world):
     live_world.portfolio.set_wallet_armed(live_world.wallet.id, True)
-    live_world.engine.handle_signal(signal(TradeSide.BUY))  # mode is paper
-    assert live_world.live.calls == []
-
-
-def test_armed_wallet_in_armed_universe_trades_live(live_world):
-    live_world.portfolio.set_wallet_armed(live_world.wallet.id, True)
-    live_world.store.update({"mode": "live"})
     live_world.engine.handle_signal(signal(TradeSide.BUY))
     assert ("buy", live_world.wallet.id) in live_world.live.calls
     assert len(live_world.portfolio.open_positions(live_world.wallet.id)) == 1
 
 
-def test_paper_wallets_simulate_regardless_of_universe(db, bus, config_store,
-                                                       token):
+def test_paper_wallets_always_use_paper_executor(db, bus, config_store,
+                                                 token):
     portfolio = PortfolioManager(db, bus, config_store, FakeProvider())
     registry = TraderRegistry(db, bus)
     wallet = portfolio.wallets()[0]
     registry.update(TraderProfile(address="t1",
                                   status=TraderStatus.FOLLOWED,
                                   assigned_wallet_id=wallet.id))
+    # live_executor=None: routing a paper order to it would crash loudly.
     engine = TradingEngine(
         config_store, portfolio, registry, FakeMarketData({token.mint: token}),
         ApprovingSafety(), RiskEngine(), bus,
         paper_executor=PaperExecutor(), live_executor=None)
-    config_store.update({"mode": "live"})  # armed universe
     engine.handle_signal(signal(TradeSide.BUY))
-    # Paper wallet trades on the paper executor even while armed.
     assert len(portfolio.open_positions(wallet.id)) == 1
 
 
