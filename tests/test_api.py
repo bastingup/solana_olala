@@ -200,3 +200,83 @@ def test_assign_trader_to_wallet(ctx, client):
     from olala.services.traders import TraderRegistry
     reloaded = TraderRegistry(ctx.db, ctx.bus)
     assert reloaded.get("TraderX").assigned_wallet_id == w2
+
+
+def open_copied_position(ctx, wallet, trader="TraderX", mint="MintA111"):
+    from olala.domain.models import Fill, TradeSide
+
+    fill = Fill(order_id=f"o-{trader}-{mint}", side=TradeSide.BUY,
+                mint=mint, quantity=100, price_sol=0.005, sol_amount=0.5,
+                fee_sol=0)
+    return ctx.portfolio.apply_buy(
+        wallet, trader, ctx.market_data.get_token_info(mint), fill)
+
+
+def test_reassign_liquidates_copied_positions(ctx, client):
+    from olala.domain.models import (PositionStatus, TraderProfile,
+                                     TraderStatus)
+
+    wallets = ctx.portfolio.wallets()
+    w1, w2 = wallets[0], wallets[1]
+    ctx.registry.update(TraderProfile(
+        address="TraderX", status=TraderStatus.FOLLOWED,
+        assigned_wallet_id=w1.id))
+    position = open_copied_position(ctx, w1)
+    events = ctx.bus.subscribe()
+
+    response = client.post("/api/traders/TraderX/assign",
+                           json={"wallet_id": w2.id})
+
+    assert response.status_code == 200
+    closed = next(p for p in ctx.portfolio.all_positions()
+                  if p.id == position.id)
+    assert closed.status is PositionStatus.CLOSED
+    assert closed.exit_reason == "reassigned"
+    assert ctx.portfolio.open_positions() == []
+    # The liquidation is announced BEFORE the moon re-anchors, so the
+    # frontend never shows the old position hanging on the new wallet.
+    kinds = []
+    while not events.empty():
+        kinds.append(events.get_nowait()["type"])
+    assert kinds.index("position_closed") < kinds.index("trader_reassigned")
+
+
+def test_reassign_aborts_when_liquidation_blocked(ctx, client):
+    from olala.domain.models import TraderProfile, TraderStatus
+
+    ctx.keystore.unlock("pw")
+    live = ctx.portfolio.add_live_wallet("Vault", "LiveAddr111")
+    paper = ctx.portfolio.wallets()[0]
+    ctx.registry.update(TraderProfile(
+        address="TraderX", status=TraderStatus.FOLLOWED,
+        assigned_wallet_id=live.id))
+    # A copied position sits in the DARK live wallet: it cannot close.
+    open_copied_position(ctx, live)
+
+    response = client.post("/api/traders/TraderX/assign",
+                           json={"wallet_id": paper.id})
+
+    assert response.status_code == 409
+    assert "could not liquidate" in response.get_json()["error"]
+    # Nothing moved: assignment intact, position still open.
+    assert ctx.registry.get("TraderX").assigned_wallet_id == live.id
+    assert len(ctx.portfolio.open_positions()) == 1
+
+
+def test_reassign_to_same_wallet_is_a_noop(ctx, client):
+    from olala.domain.models import (PositionStatus, TraderProfile,
+                                     TraderStatus)
+
+    w1 = ctx.portfolio.wallets()[0]
+    ctx.registry.update(TraderProfile(
+        address="TraderX", status=TraderStatus.FOLLOWED,
+        assigned_wallet_id=w1.id))
+    position = open_copied_position(ctx, w1)
+
+    response = client.post("/api/traders/TraderX/assign",
+                           json={"wallet_id": w1.id})
+
+    assert response.status_code == 200
+    still_open = next(p for p in ctx.portfolio.all_positions()
+                      if p.id == position.id)
+    assert still_open.status is PositionStatus.OPEN

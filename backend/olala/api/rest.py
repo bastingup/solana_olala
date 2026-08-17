@@ -97,8 +97,10 @@ def build_rest_blueprint(app_context) -> Blueprint:
     @api.post("/traders/<address>/assign")
     def assign_trader(address: str):
         """Re-assign a followed trader to a different wallet (the galaxy's
-        drag-and-drop lands here). Existing positions stay with the wallet
-        that opened them; new copies go to the new wallet."""
+        drag-and-drop lands here). Every open position copied from this
+        trader is liquidated first — no wallet may be left holding a
+        position from the trader's previous era. If any close cannot
+        execute, the reassignment does not happen."""
         payload = request.get_json(silent=True) or {}
         wallet_id = payload.get("wallet_id") or ""
         profile = ctx.registry.get(address)
@@ -110,6 +112,19 @@ def build_rest_blueprint(app_context) -> Blueprint:
         if profile.status is not TraderStatus.FOLLOWED:
             return jsonify({"error": "only followed traders can be "
                                      "assigned to a wallet"}), 400
+        if profile.assigned_wallet_id == wallet.id:
+            return jsonify(profile.to_dict())
+
+        copied = [p for p in ctx.portfolio.open_positions()
+                  if p.trader == address]
+        for position in copied:
+            if not ctx.engine.close_position(position,
+                                             ExitReason.REASSIGNED):
+                return jsonify({
+                    "error": f"could not liquidate {position.symbol} — "
+                             "reassignment aborted; fix the blocking "
+                             "close (see feed) and drag again"}), 409
+
         profile.assigned_wallet_id = wallet.id
         ctx.registry.update(profile, event="trader_reassigned")
         return jsonify(profile.to_dict())
@@ -135,7 +150,9 @@ def build_rest_blueprint(app_context) -> Blueprint:
                          if p.id == position_id), None)
         if position is None:
             return jsonify({"error": "no such open position"}), 404
-        ctx.engine.close_position(position, ExitReason.MANUAL)
+        if not ctx.engine.close_position(position, ExitReason.MANUAL):
+            return jsonify({"error": "close did not execute — see the "
+                                     "feed for the reason"}), 409
         return jsonify({"ok": True})
 
     @api.get("/fills")

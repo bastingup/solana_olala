@@ -3,6 +3,28 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — reassignment liquidates copied positions (2026-08-17)
+
+- [x] **Operator-reported bug:** after dragging a trader moon onto a new
+      (live) wallet planet, the trader's position satellite followed the
+      moon — visually attaching a position to a wallet that does not
+      hold it (the satellite orbits the moon since the orbit rework, so
+      the moon's wallet reads as the custodian).
+- [x] **Operator decision — reassignment liquidates:** `POST /api/
+      traders/<addr>/assign` now closes EVERY open position copied from
+      that trader (new `ExitReason.REASSIGNED`, feed: "Liquidated on
+      reassignment") BEFORE re-anchoring; `position_closed` events are
+      published before `trader_reassigned` (order pinned by test). If
+      any close cannot execute (dark live wallet, chain failure) the
+      call returns 409 and the assignment stays put — no half states.
+      Same-wallet drags are no-ops and liquidate nothing.
+      `TradingEngine.close_position` now returns success; the manual
+      close endpoint 409s honestly instead of always saying ok.
+- [x] Galaxy honesty guard: a satellite orbits its trader's moon ONLY
+      when `trader.assigned_wallet_id == position.wallet_id`; otherwise
+      it orbits its own wallet planet, where custody actually lives.
+      197 tests green (3 new).
+
 ## Done — live path hardened: confirm → reconstruct → receipt (2026-08-17)
 
 - [x] **M6 closed (was: REQUIRED BEFORE LIVE IS EVER ARMED).**
@@ -166,6 +188,8 @@ Context in [[Project]]; standing decisions in [[Claude]].
       `POST /api/traders/<addr>/assign` persists it and publishes
       `trader_reassigned` (feed line + orbit re-anchors). Open
       positions stay with the wallet that opened them.
+      [SUPERSEDED 2026-08-17: reassignment now LIQUIDATES the trader's
+      copied positions first — see the reassignment entry above.]
 - [x] F5/persistence question answered: positions/assignments/balances
       are DB-persisted; the feed is per-session by design; frontend
       refresh never triggers backend sweeps (coincidental timing).

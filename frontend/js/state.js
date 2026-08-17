@@ -115,7 +115,9 @@ export class Store {
     this.state.positions.set(data.id, data);
     const pnl = data.realized_pnl_sol;
     const word = { trader_exit: "Trader exited", panic_stop: "PANIC STOP",
-                   manual: "Manually closed" }[data.exit_reason] || "Closed";
+                   manual: "Manually closed",
+                   reassigned: "Liquidated on reassignment",
+                 }[data.exit_reason] || "Closed";
     this._pushFeed("trade",
       `${word} <b>${esc(data.symbol)}</b> · ` +
       `${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)} ◎`, ts);

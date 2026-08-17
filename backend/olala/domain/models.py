@@ -35,6 +35,9 @@ class ExitReason(str, Enum):
     TRADER_EXIT = "trader_exit"
     PANIC_STOP = "panic_stop"
     MANUAL = "manual"
+    # Trader was dragged to a different wallet: the copies it produced
+    # are liquidated so no wallet is left holding another era's position.
+    REASSIGNED = "reassigned"
 
 
 class ReceiptStatus(str, Enum):

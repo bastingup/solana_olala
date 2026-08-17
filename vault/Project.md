@@ -176,7 +176,16 @@ system degrades to polling, never to silence.
   touches reserve).
 - Copy SELL → full close of the copied position (partial-exit mirroring is
   an open task, see [[Tasks]]).
-- Exits: `trader_exit`, `panic_stop` (ATR trail), `manual` (REST).
+- Exits: `trader_exit`, `panic_stop` (ATR trail), `manual` (REST),
+  `reassigned` (see below).
+- **Reassignment liquidates** (operator decision 2026-08-17): dragging a
+  trader's moon to another wallet first closes EVERY open position copied
+  from that trader (`ExitReason.REASSIGNED`); if any close cannot execute
+  (e.g. dark live wallet), the API returns 409 and the assignment does
+  not change. A moon must never appear to carry another wallet's money —
+  the galaxy also refuses to orbit a satellite around a moon whose
+  assigned wallet differs from the position's wallet. (Retiring/
+  unfollowing is different: there positions stay, guarded by the stop.)
 - Paper fills price at live DexScreener marks with modeled impact
   (½ · trade/liquidity, capped 5%, plus 10bp spread).
 

@@ -125,18 +125,19 @@ class TradingEngine:
 
     # -- exits -------------------------------------------------------------
 
-    def close_position(self, position: Position, reason: ExitReason) -> None:
+    def close_position(self, position: Position, reason: ExitReason) -> bool:
+        """Close one open position; True only when the close executed."""
         wallet = self._portfolio.get_wallet(position.wallet_id)
         if wallet is None:
-            return
+            return False
         if not self._wallet_may_trade(wallet):
             self._bus.publish("execution_error", {
                 "position_id": position.id,
                 "error": f"cannot close {position.symbol}: wallet is "
                          "disarmed — arm it to manage its positions"})
-            return
+            return False
         if not self._portfolio.begin_close(position):
-            return  # Another thread already owns this close.
+            return False  # Another thread already owns this close.
         token = self._market_data.get_token_info(position.mint)
         if token is None:
             # Market data outage: exit anyway at the last known mark with
@@ -156,13 +157,14 @@ class TradingEngine:
                            position.id, exc)
             self._bus.publish("execution_error", {
                 "position_id": position.id, "error": str(exc)})
-            return
+            return False
         self._portfolio.apply_close(wallet, position, fill, reason)
         self._bus.publish("trade_executed", {
             "position_id": position.id, "wallet_id": wallet.id,
             "side": "sell", "symbol": position.symbol, "mint": position.mint,
             "sol_amount": fill.sol_amount, "reason": reason.value,
             "trader": position.trader})
+        return True
 
     def _reject(self, signal: CopySignal, wallet: Wallet,
                 reason: str) -> None:

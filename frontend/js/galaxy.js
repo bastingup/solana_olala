@@ -193,13 +193,18 @@ export class Galaxy {
     });
 
     // Positions are satellites in orbit around the moon of the trader
-    // they copy (their wallet's planet when that moon has left the sky),
-    // stacked outward when one moon carries several.
+    // they copy, stacked outward when one moon carries several. The moon
+    // must belong to the SAME wallet that holds the position — a
+    // reassigned trader's moon must never carry another wallet's money —
+    // otherwise (or when the moon left the sky) the satellite orbits its
+    // own wallet planet, where custody actually lives.
     const satelliteCount = new Map();
     openPositions.forEach((position) => {
-      const centerId =
-        state.traders.get(position.trader)?.status === "followed"
-          ? `t:${position.trader}` : `w:${position.wallet_id}`;
+      const trader = state.traders.get(position.trader);
+      const moonHoldsIt = trader?.status === "followed"
+        && trader.assigned_wallet_id === position.wallet_id;
+      const centerId = moonHoldsIt
+        ? `t:${position.trader}` : `w:${position.wallet_id}`;
       const index = satelliteCount.get(centerId) || 0;
       satelliteCount.set(centerId, index + 1);
       const base = index * 2.4 + 0.7;
