@@ -1,0 +1,44 @@
+mode: paper
+dev_mode: true
+server:
+  host: 127.0.0.1
+  port: 8420
+chain:
+  rpc_endpoints:
+  - https://api.mainnet-beta.solana.com
+  - https://solana-rpc.publicnode.com
+  helius_api_key: 
+  requests_per_second: 2.0
+  request_timeout_sec: 15.0
+filters:
+  min_history_days: 120
+  min_trades: 60
+  min_win_rate: 0.75
+  max_inactive_hours: 48
+  min_token_market_cap_usd: 20000000.0
+  min_token_liquidity_usd: 500000.0
+  max_token_market_cap_usd: 5000000000.0
+risk:
+  max_liquidity_fraction: 0.01
+  reserve_fraction: 0.3
+  per_trade_fraction: 0.05
+  max_positions_per_wallet: 8
+  atr_period: 14
+  atr_stop_multiplier: 3.5
+  max_token_top10_holder_fraction: 0.5
+discovery:
+  scan_interval_sec: 120
+  rpc_calls_per_scan: 400
+  census_tx_sample: 16
+  census_min_sightings: 2
+  winners_per_scan: 4
+  max_candidates_per_scan: 200
+  max_followed_traders: 12
+  signatures_per_trader: 3000
+  skill_window_days: 90
+follow:
+  poll_interval_sec: 5
+  price_mark_interval_sec: 20
+paper:
+  wallet_count: 3
+  starting_sol: 10.0
