@@ -1,5 +1,7 @@
 # solana-olala
 
+![Screenshot](./SolOlala.png)
+
 ¥€$ !!!! :)
 
 **Solana-olala** is a fully automated, risk-gated copy-trading system for
