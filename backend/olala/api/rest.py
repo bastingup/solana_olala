@@ -142,6 +142,10 @@ def build_rest_blueprint(app_context) -> Blueprint:
     def list_fills():
         return jsonify(ctx.db.load_fills())
 
+    @api.get("/receipts")
+    def list_receipts():
+        return jsonify(ctx.db.load_receipts())
+
     # -- configuration and mode -------------------------------------------
 
     @api.get("/config")

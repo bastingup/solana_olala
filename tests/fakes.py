@@ -23,6 +23,7 @@ class FakeProvider:
         self.sol_balances: dict[str, float] = {}
         self.sent_transactions: list[str] = []
         self.fail_transactions: set[str] = set()
+        self.signature_status: dict[str, dict[str, Any]] = {}
 
     def get_signatures(self, address, limit=100, before=None):
         entries = self.signatures.get(address, [])
@@ -60,6 +61,9 @@ class FakeProvider:
         self.sent_transactions.append(signed_tx_base64)
         return f"fake-sig-{len(self.sent_transactions)}"
 
+    def get_signature_status(self, signature):
+        return self.signature_status.get(signature)
+
 
 class FakeBirdeye:
     """BirdeyeClient replacement: scripted leaderboard, optional failure."""
@@ -74,6 +78,23 @@ class FakeBirdeye:
         if self.fail:
             from olala.chain.birdeye import BirdeyeError
             raise BirdeyeError("scripted failure")
+        return self.traders[:limit]
+
+
+class FakeTracker:
+    """SolanaTrackerClient replacement: scripted leaderboard, optional
+    failure (covers missing entitlement, rate limit, outage alike)."""
+
+    def __init__(self, traders=None, fail=False):
+        self.traders = traders or []
+        self.fail = fail
+        self.calls = 0
+
+    def top_traders(self, window_days=90, limit=100, min_trades=20):
+        self.calls += 1
+        if self.fail:
+            from olala.chain.solana_tracker import SolanaTrackerError
+            raise SolanaTrackerError("scripted failure")
         return self.traders[:limit]
 
 

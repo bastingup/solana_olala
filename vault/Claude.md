@@ -16,11 +16,21 @@ memory, and the operator relies on them across sessions.
   (unlocked keystore holding that wallet's key; dev_mode refuses to
   arm; disarming always allowed). Do not reintroduce a global mode.
 - **Discovery has no seed-token list** (operator removed it 2026-08-16
-  after the old pool-sampling harvested an arb bot). Candidates come from
-  the Birdeye top-PnL leaderboard (`chain.birdeye_api_key`) with
-  Jupiter-program flow sampling as the automatic fallback, gated by a bot
-  pre-screen and copyability filters (median hold, trades/day). Do not
+  after the old pool-sampling harvested an arb bot). Candidate sources,
+  in order: PnL leaderboard services — Solana Tracker
+  (`chain.solana_tracker_api_key`) then Birdeye
+  (`chain.birdeye_api_key`) — throttled to
+  `discovery.leaderboard_interval_sec`, with the DEX census and winners'
+  holders as the always-available on-chain base. Operator requirement
+  (2026-08-17): services are OPTIONAL accelerators — no key, a rate
+  limit, or an outage must fall through to on-chain, never stall the
+  sweep. Services only nominate; judgment is our own scan. Do not
   reintroduce seed lists.
+- **The roster self-improves** (operator requirement 2026-08-17): when a
+  passing candidate measures stronger than the weakest followed trader
+  (by `discovery.replace_margin`), the weakest is auto-retired and
+  replaced. Discovery never idles on a full roster. Do not restore the
+  roster-full early return.
 - **Chain access is pluggable, public-first.** Public RPC endpoints +
   DexScreener + Jupiter lite-api, all keyless. A free Helius key in
   `backend/config.yaml` (chain.helius_api_key) upgrades throughput via

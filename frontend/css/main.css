@@ -550,6 +550,38 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   word-break: break-all;
 }
 
+/* Chain receipts: the live wallet's on-chain audit trail. */
+.receipt-head {
+  font-family: var(--display);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--nebula-soft);
+  padding-top: 6px;
+}
+
+.receipt-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--ink-dim);
+}
+
+.receipt-row b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+.receipt-row .rc-what { flex: 1; }
+.receipt-row.confirmed .rc-what { color: var(--gain); }
+.receipt-row.failed .rc-what, .receipt-row.timeout .rc-what { color: var(--loss); }
+.receipt-row.none { color: var(--ink-faint); font-size: 10px; }
+.receipt-row .rc-sig {
+  font-family: var(--mono);
+  color: var(--nebula-soft);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--nebula-line);
+}
+.receipt-row .rc-sig:hover { color: var(--ink); border-bottom-color: var(--nebula); }
+
 .commit-btn {
   font-size: 11px;
   font-weight: 600;

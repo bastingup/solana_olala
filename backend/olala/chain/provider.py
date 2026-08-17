@@ -189,6 +189,17 @@ class RpcProvider(ABC):
             "encoding": "base64", "skipPreflight": False,
         }])
 
+    def get_signature_status(self, signature: str) -> dict[str, Any] | None:
+        """Confirmation status of one signature, or None if unknown.
+
+        ``searchTransactionHistory`` looks past the node's recent-status
+        cache, so a transaction that landed minutes ago still reports.
+        """
+        result = self._call("getSignatureStatuses", [
+            [signature], {"searchTransactionHistory": True}]) or {}
+        values = result.get("value") or [None]
+        return values[0]
+
 
 class PublicRpcProvider(RpcProvider):
     """Keyless public endpoints, rotated round-robin under a shared budget."""

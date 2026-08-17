@@ -87,7 +87,7 @@ class TraderDiscoveryDaemon(Daemon):
                  market_data: MarketDataService, registry: TraderRegistry,
                  db: Database, bus: EventBus,
                  assign_wallet: Callable[[], str],
-                 birdeye=None, jupiter=None) -> None:
+                 birdeye=None, jupiter=None, tracker=None) -> None:
         super().__init__("discovery",
                          store.config.discovery.scan_interval_sec)
         self._store = store
@@ -99,6 +99,15 @@ class TraderDiscoveryDaemon(Daemon):
         self._assign_wallet = assign_wallet
         self._birdeye = birdeye
         self._jupiter = jupiter
+        self._tracker = tracker
+        # Leaderboard services are optional accelerators on free tiers:
+        # polled at most every leaderboard_interval_sec, and marked
+        # attempted even on failure so a rate-limited service is not
+        # hammered every sweep.
+        self._last_leaderboard_at = 0.0
+        # Service-reported win rate per nominated wallet — only used to
+        # decide who gets deep-scanned FIRST; judgment stays ours.
+        self._service_rank: dict[str, float] = {}
         self._reconstructor = TradeReconstructor()
         self._scorer = TraderScorer()
         self._filter = TraderAdmissionFilter(market_data)
@@ -131,7 +140,8 @@ class TraderDiscoveryDaemon(Daemon):
         self.last_status = {
             "phase": phase,
             "detail": detail,
-            "source": ("Birdeye leaderboard" if self._birdeye
+            "source": ("Solana Tracker PnL" if self._tracker
+                       else "Birdeye leaderboard" if self._birdeye
                        else "Winners' holders"),
             "counters": dict(self._counters),
             "candidates": len(
@@ -149,19 +159,20 @@ class TraderDiscoveryDaemon(Daemon):
         self._next_sweep_at = time.time() + self._interval
         budget = RpcBudget(config.discovery.rpc_calls_per_scan)
         followed = self._registry.followed()
-        if len(followed) >= config.discovery.max_followed_traders:
-            logger.info("discovery idle: %d/%d traders followed",
-                        len(followed), config.discovery.max_followed_traders)
-            self._status("roster_full",
-                         f"{len(followed)} traders followed — discovery rests "
-                         "until a seat opens")
-            return
-        logger.info("discovery tick: %d followed, %d candidates in review, "
-                    "%d RPC calls budgeted",
-                    len(followed),
+        # A full roster does NOT stop discovery: the sweep keeps hunting,
+        # and any candidate that measures stronger than the weakest
+        # followed trader replaces it (see _finalize_candidate).
+        roster_full = len(followed) >= config.discovery.max_followed_traders
+        logger.info("discovery tick: %d followed%s, %d candidates in "
+                    "review, %d RPC calls budgeted",
+                    len(followed), " (full — hunting for upgrades)"
+                    if roster_full else "",
                     len(self._registry.by_status(TraderStatus.CANDIDATE)),
                     config.discovery.rpc_calls_per_scan)
-        self._status("sweep_start", "Sweep started", budget)
+        self._status("sweep_start",
+                     "Roster full — hunting for an upgrade; a stronger "
+                     "find replaces the weakest followed trader"
+                     if roster_full else "Sweep started", budget)
 
         candidates = self._registry.by_status(TraderStatus.CANDIDATE)
         if len(candidates) < config.discovery.max_candidates_per_scan:
@@ -172,9 +183,11 @@ class TraderDiscoveryDaemon(Daemon):
             candidates = self._registry.by_status(TraderStatus.CANDIDATE)
 
         # Highest-conviction candidates first: wallets that bought early
-        # into several different winners outrank single-hit finds.
+        # into several different winners outrank single-hit finds, then
+        # service-nominated wallets by their reported win rate.
         candidates.sort(key=lambda p: (
-            -len(self._early_hits.get(p.address, ())), p.discovered_at))
+            -len(self._early_hits.get(p.address, ())),
+            -self._service_rank.get(p.address, 0.0), p.discovered_at))
         for candidate in candidates:
             if budget.exhausted:
                 break
@@ -194,17 +207,64 @@ class TraderDiscoveryDaemon(Daemon):
     def _harvest_candidates(self, config, budget: RpcBudget) -> None:
         """The census is the primary enumerator: it nominates wallets that
         provably trade, and judgment is only ever our computed win rate.
-        Winners' holders and the Birdeye leaderboard (if keyed) remain as
-        cheap secondary feeders into the same measurement."""
+        PnL leaderboard services (Solana Tracker, then Birdeye — each
+        optional, keyed, and throttled to its free tier) accelerate the
+        hunt when available; winners' holders is the on-chain feeder that
+        needs nothing but RPC. Every service failure falls through — a
+        missing key, a rate limit, or an outage costs breadth, never the
+        sweep."""
+        import time
         self._census_flow(config, budget)
-        if self._birdeye is not None and not budget.exhausted:
-            try:
-                self._harvest_from_leaderboard(config, budget)
-                return
-            except Exception as exc:
-                logger.warning("Birdeye leaderboard unavailable (%s)", exc)
+        if not budget.exhausted and self._leaderboard_due(config):
+            # Mark the attempt regardless of outcome: a rate-limited
+            # service must not be retried every sweep.
+            self._last_leaderboard_at = time.time()
+            for name, client, harvest in (
+                    ("Solana Tracker", self._tracker,
+                     self._harvest_from_tracker),
+                    ("Birdeye", self._birdeye,
+                     self._harvest_from_leaderboard)):
+                if client is None:
+                    continue
+                try:
+                    harvest(config, budget)
+                    return
+                except Exception as exc:
+                    logger.warning("%s leaderboard unavailable (%s) — "
+                                   "falling through", name, exc)
         if not budget.exhausted:
             self._harvest_from_winners(config, budget)
+
+    def _leaderboard_due(self, config) -> bool:
+        import time
+        if self._tracker is None and self._birdeye is None:
+            return False
+        return (time.time() - self._last_leaderboard_at
+                >= config.discovery.leaderboard_interval_sec)
+
+    def _harvest_from_tracker(self, config, budget: RpcBudget) -> None:
+        """Solana Tracker's PnL leaderboard: wallets the service already
+        measured across the whole chain. Nomination only — every wallet
+        still passes the pre-screen and the full on-chain deep scan."""
+        entries = self._tracker.top_traders(
+            window_days=config.discovery.skill_window_days)
+        found = 0
+        for entry in entries:
+            address = entry["address"]
+            if entry.get("win_rate") is not None:
+                self._service_rank[address] = entry["win_rate"]
+            if self._registry.get(address) is not None:
+                continue
+            if not self._pre_screen(config, address, budget):
+                continue
+            if self._registry.add_candidate(address):
+                found += 1
+                logger.info("leaderboard candidate %s… (service win rate "
+                            "%s)", address[:8], entry.get("win_rate"))
+        if found:
+            self._bus.publish("discovery_scan", {
+                "source": "Solana Tracker PnL leaderboard",
+                "new_candidates": found})
 
     # -- DEX census --------------------------------------------------------
 
@@ -560,39 +620,77 @@ class TraderDiscoveryDaemon(Daemon):
         if config.dev_mode:
             # Dev: bypass every admission gate — anyone with observed
             # trades gets followed so paper activity flows.
-            passed, reason = bool(window), "no trades observed in window"
+            passed = bool(window)
+            reason = "" if passed else "no trades observed in window"
         else:
             passed, reason = self._filter.evaluate(
                 config.filters, stats, window,
                 full_history_days=stats_full.history_days)
 
-        followed = self._registry.followed()
-        if passed and len(followed) < config.discovery.max_followed_traders:
-            profile.status = TraderStatus.FOLLOWED
-            profile.assigned_wallet_id = self._assign_wallet()
-            # Arm the follow cursor at the trader's CURRENT newest
-            # signature, not the one from when scanning began — otherwise
-            # days-old qualification-era trades replay as live signals.
-            follow_cursor = self._newest_seen.get(
-                address, trades[-1].signature if trades else "")
-            if budget.take(1):
-                try:
-                    latest = self._provider.get_signatures(address, limit=1)
-                    if latest:
-                        follow_cursor = latest[0]["signature"]
-                except ChainError as exc:
-                    logger.warning("could not refresh follow cursor for "
-                                   "%s: %s", address, exc)
-            self._registry.update(profile, follow_cursor=follow_cursor,
-                                  event="trader_admitted")
-            self._counters["admitted"] += 1
-            logger.info("admitted trader %s (score %.3f, win rate %.0f%%)",
-                        address, profile.score, stats.win_rate * 100)
+        if not passed:
+            self._reject_scored(profile, reason)
         else:
-            profile.status = TraderStatus.REJECTED
-            profile.rejection_reason = reason or "follow roster full"
-            self._registry.update(profile, event="trader_rejected")
-            self._counters["rejected"] += 1
-            logger.info("rejected trader %s: %s", address[:8],
-                        profile.rejection_reason)
+            followed = self._registry.followed()
+            if len(followed) < config.discovery.max_followed_traders:
+                self._admit(profile, trades, budget)
+            else:
+                # Roster full: a measurably stronger candidate evicts the
+                # weakest followed trader. The margin is hysteresis —
+                # statistical noise must not churn the roster.
+                worst = min(followed, key=lambda p: p.score)
+                margin = config.discovery.replace_margin
+                if profile.score > worst.score + margin:
+                    self._retire_for_replacement(worst, profile)
+                    self._admit(profile, trades, budget)
+                else:
+                    self._reject_scored(
+                        profile,
+                        f"roster full — score {profile.score:.3f} does "
+                        f"not beat the weakest followed "
+                        f"({worst.score:.3f} + {margin:.2f} margin)")
         self._counters["histories_read"] += 1
+
+    def _admit(self, profile, trades, budget: RpcBudget) -> None:
+        address = profile.address
+        profile.status = TraderStatus.FOLLOWED
+        profile.rejection_reason = ""
+        profile.assigned_wallet_id = self._assign_wallet()
+        # Arm the follow cursor at the trader's CURRENT newest
+        # signature, not the one from when scanning began — otherwise
+        # days-old qualification-era trades replay as live signals.
+        follow_cursor = self._newest_seen.get(
+            address, trades[-1].signature if trades else "")
+        if budget.take(1):
+            try:
+                latest = self._provider.get_signatures(address, limit=1)
+                if latest:
+                    follow_cursor = latest[0]["signature"]
+            except ChainError as exc:
+                logger.warning("could not refresh follow cursor for "
+                               "%s: %s", address, exc)
+        self._registry.update(profile, follow_cursor=follow_cursor,
+                              event="trader_admitted")
+        self._counters["admitted"] += 1
+        logger.info("admitted trader %s (score %.3f, win rate %.0f%%)",
+                    address, profile.score,
+                    (profile.stats.win_rate if profile.stats else 0) * 100)
+
+    def _reject_scored(self, profile, reason: str) -> None:
+        profile.status = TraderStatus.REJECTED
+        profile.rejection_reason = reason or "did not meet the bar"
+        self._registry.update(profile, event="trader_rejected")
+        self._counters["rejected"] += 1
+        logger.info("rejected trader %s: %s", profile.address[:8],
+                    profile.rejection_reason)
+
+    def _retire_for_replacement(self, worst, replacement) -> None:
+        """Evict the weakest followed trader for a stronger find. Open
+        positions stay with their wallet, protected by the panic stop,
+        and close out on their own exits — mirroring manual unfollow."""
+        worst.status = TraderStatus.RETIRED
+        worst.rejection_reason = (
+            f"replaced by {replacement.address[:6]}… "
+            f"(score {replacement.score:.3f} vs {worst.score:.3f})")
+        self._registry.update(worst, event="trader_retired")
+        logger.info("retired trader %s: %s", worst.address[:8],
+                    worst.rejection_reason)

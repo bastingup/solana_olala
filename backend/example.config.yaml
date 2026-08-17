@@ -6,7 +6,14 @@ chain:
   rpc_endpoints:
   - https://api.mainnet-beta.solana.com
   - https://solana-rpc.publicnode.com
-  helius_api_key: 
+  helius_api_key:
+  # Optional PnL leaderboard feeders. Leave empty to run purely on-chain
+  # (census + winners' holders); any failure or rate limit falls through
+  # to on-chain automatically.
+  # Free key: https://www.solanatracker.io/data-api (10k requests/month)
+  solana_tracker_api_key:
+  # Free key: https://bds.birdeye.so (30k CU/month, secondary source)
+  birdeye_api_key:
   requests_per_second: 2.0
   request_timeout_sec: 15.0
 filters:
@@ -35,6 +42,12 @@ discovery:
   max_followed_traders: 12
   signatures_per_trader: 3000
   skill_window_days: 90
+  # Leaderboard services polled at most this often (900s keeps the
+  # Solana Tracker free tier at ~2.9k of its 10k monthly requests).
+  leaderboard_interval_sec: 900
+  # A passing candidate replaces the weakest followed trader only when
+  # its score beats the incumbent's by this margin (anti-churn).
+  replace_margin: 0.02
 follow:
   poll_interval_sec: 5
   price_mark_interval_sec: 20

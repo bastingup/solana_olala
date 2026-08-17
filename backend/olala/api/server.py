@@ -18,6 +18,7 @@ from ..chain.birdeye import BirdeyeClient
 from ..chain.jupiter import JupiterClient
 from ..chain.market_data import MarketDataService
 from ..chain.provider import build_provider
+from ..chain.solana_tracker import SolanaTrackerClient
 from ..chain.subscriber import TraderSubscriber
 from ..config import ConfigStore
 from ..discovery.scanner import TraderDiscoveryDaemon
@@ -69,15 +70,18 @@ class AppContext:
             safety, risk, self.bus,
             paper_executor=PaperExecutor(),
             live_executor=LiveJupiterExecutor(
-                jupiter, self.provider, self.keystore))
+                jupiter, self.provider, self.keystore,
+                on_receipt=self.record_receipt))
         follower = FollowDaemon(self.store, self.provider, self.registry,
                                 self.engine)
         birdeye = (BirdeyeClient(config.chain.birdeye_api_key)
                    if config.chain.birdeye_api_key else None)
+        tracker = (SolanaTrackerClient(config.chain.solana_tracker_api_key)
+                   if config.chain.solana_tracker_api_key else None)
         self.discovery = TraderDiscoveryDaemon(
             self.store, self.provider, self.market_data, self.registry,
             self.db, self.bus, assign_wallet=self.assign_wallet,
-            birdeye=birdeye, jupiter=jupiter)
+            birdeye=birdeye, jupiter=jupiter, tracker=tracker)
         self.daemons = [
             self.discovery,
             follower,
@@ -91,6 +95,13 @@ class AppContext:
                     ", dev mode" if config.dev_mode else "")
 
     # -- cross-service policies -------------------------------------------
+
+    def record_receipt(self, receipt) -> None:
+        """Persist and broadcast one live-order receipt — the on-chain
+        audit trail must survive restarts and reach the operator's eyes
+        no matter how the order ended."""
+        self.db.save_receipt(receipt)
+        self.bus.publish("receipt_recorded", receipt.to_dict())
 
     def assign_wallet(self) -> str:
         """Randomized wallet assignment biased toward the least-loaded
@@ -113,6 +124,8 @@ class AppContext:
         chain = config.get("chain", {})
         chain["helius_enabled"] = bool(chain.pop("helius_api_key", ""))
         chain["birdeye_enabled"] = bool(chain.pop("birdeye_api_key", ""))
+        chain["solana_tracker_enabled"] = bool(
+            chain.pop("solana_tracker_api_key", ""))
         return config
 
     def snapshot(self) -> dict:
@@ -124,6 +137,7 @@ class AppContext:
             "traders": [p.to_dict() for p in self.registry.all()],
             "config": self.public_config(),
             "fills": self.db.load_fills(50),
+            "receipts": self.db.load_receipts(50),
             "discovery": self.discovery.last_status,
         })
         return snapshot

@@ -120,6 +120,24 @@ const inspector = document.getElementById("inspector");
 
 const CLOSE_ICON = `<svg class="close-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>`;
 
+// The on-chain audit trail for one live wallet: every order attempt with
+// its landed amounts and a link to the transaction itself.
+function renderReceipts(walletId) {
+  const receipts = store.state.receipts
+    .filter((r) => r.wallet_id === walletId).slice(0, 5);
+  const rows = receipts.length
+    ? receipts.map((r) => `<div class="receipt-row ${esc(r.status)}">
+        <span class="rc-what">${esc(r.side.toUpperCase())} · ${esc(r.status)}</span>
+        <b>${fmtSol(r.status === "confirmed" ? r.actual_sol : r.quoted_sol, 3)}</b>
+        <a class="rc-sig" target="_blank" rel="noopener"
+           href="https://solscan.io/tx/${encodeURIComponent(r.signature)}"
+           title="Open the transaction on Solscan">${esc(r.signature.slice(0, 8))}…</a>
+      </div>`).join("")
+    : `<div class="receipt-row none">No live orders yet — receipts appear
+       here when this wallet signs.</div>`;
+  return `<div class="receipt-head">CHAIN RECEIPTS</div>${rows}`;
+}
+
 function openInspector(node) {
   const { type, data } = node;
   let html = "";
@@ -142,7 +160,8 @@ function openInspector(node) {
         </button>
         <span class="power-state ${data.armed ? "on" : ""}">
           ${data.armed ? "ARMED — signs real transactions" : "DARK — holds fire"}</span>
-      </div>`}`;
+      </div>
+      ${renderReceipts(data.id)}`}`;
   } else if (type === "trader" || type === "rejected" || type === "candidate") {
     const stats = data.stats || {};
     html = `<h3>TRADER · ${shortAddr(data.address)}

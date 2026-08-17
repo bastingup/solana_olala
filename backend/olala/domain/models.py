@@ -37,6 +37,12 @@ class ExitReason(str, Enum):
     MANUAL = "manual"
 
 
+class ReceiptStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    FAILED = "failed"        # landed on chain, but the program errored
+    TIMEOUT = "timeout"      # never landed before the blockhash expired
+
+
 def _now() -> float:
     return time.time()
 
@@ -271,4 +277,37 @@ class Fill:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["side"] = self.side.value
+        return d
+
+
+@dataclass
+class Receipt:
+    """On-chain outcome of one live order attempt — the audit trail.
+
+    Every live submission produces exactly one receipt, success or not:
+    what was quoted, what actually moved on chain (reconstructed from the
+    landed transaction, never trusted from the quote), and how it ended.
+    """
+
+    signature: str
+    order_id: str
+    wallet_id: str
+    side: TradeSide
+    mint: str
+    status: ReceiptStatus
+    quoted_sol: float
+    quoted_tokens: float
+    actual_sol: float = 0.0
+    actual_tokens: float = 0.0
+    fee_sol: float = 0.0
+    slot: int = 0
+    block_time: float = 0.0
+    detail: str = ""
+    id: str = field(default_factory=new_id)
+    created_at: float = field(default_factory=_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["side"] = self.side.value
+        d["status"] = self.status.value
         return d

@@ -32,6 +32,10 @@ class ChainConfig:
     ])
     helius_api_key: str = ""
     birdeye_api_key: str = ""
+    # Solana Tracker Data API (free tier: 10k requests/month). Feeds the
+    # PnL leaderboard as a candidate source; empty key just means the
+    # scanner relies on the on-chain census and winners' holders alone.
+    solana_tracker_api_key: str = ""
     requests_per_second: float = 2.0
     request_timeout_sec: float = 15.0
 
@@ -104,6 +108,14 @@ class DiscoveryConfig:
     # Birdeye leaderboard window for the primary candidate source.
     gainers_window: str = "1W"
     gainers_limit: int = 10
+    # Leaderboard services are polled at most this often (seconds) so a
+    # free API tier lasts the month; between polls the on-chain sources
+    # carry the sweep. 900s ≈ 2.9k requests/month.
+    leaderboard_interval_sec: int = 900
+    # Roster replacement: a passing candidate evicts the weakest followed
+    # trader only when its score clears the incumbent's by this margin —
+    # hysteresis so statistical noise cannot churn the roster.
+    replace_margin: float = 0.02
     # Winners-holders harvest: tokens that ran at least this hard over 24h
     # with at least this much liquidity get their top holders read — the
     # wallets holding size in a winner bought early by construction.

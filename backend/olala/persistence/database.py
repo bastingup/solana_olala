@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from ..domain.models import (Fill, ObservedTrade, Position, PositionStatus,
-                             TraderProfile, TraderStats, TraderStatus,
-                             TradeSide)
+                             Receipt, TraderProfile, TraderStats,
+                             TraderStatus, TradeSide)
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "olala.db"
 
@@ -86,6 +86,26 @@ CREATE TABLE IF NOT EXISTS fills (
     executed_at REAL NOT NULL,
     signature TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    signature TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    wallet_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    mint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    quoted_sol REAL NOT NULL DEFAULT 0,
+    quoted_tokens REAL NOT NULL DEFAULT 0,
+    actual_sol REAL NOT NULL DEFAULT 0,
+    actual_tokens REAL NOT NULL DEFAULT 0,
+    fee_sol REAL NOT NULL DEFAULT 0,
+    slot INTEGER NOT NULL DEFAULT 0,
+    block_time REAL NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_receipts_wallet
+    ON receipts(wallet_id, created_at);
 """
 
 
@@ -283,5 +303,26 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM fills ORDER BY executed_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- receipts ----------------------------------------------------------
+
+    def save_receipt(self, receipt: Receipt) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO receipts VALUES"
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (receipt.id, receipt.signature, receipt.order_id,
+                 receipt.wallet_id, receipt.side.value, receipt.mint,
+                 receipt.status.value, receipt.quoted_sol,
+                 receipt.quoted_tokens, receipt.actual_sol,
+                 receipt.actual_tokens, receipt.fee_sol, receipt.slot,
+                 receipt.block_time, receipt.detail, receipt.created_at))
+
+    def load_receipts(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM receipts ORDER BY created_at DESC LIMIT ?",
                 (limit,)).fetchall()
         return [dict(r) for r in rows]

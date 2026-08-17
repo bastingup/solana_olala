@@ -40,13 +40,14 @@ open the browser.
 | `discovery/reconstruction.py` | `TradeReconstructor`: DEX-agnostic swap detection by diffing pre/post balances (exactly one non-SOL token moving against SOL). Fee-payer fee excluded from traded amount. |
 | `discovery/scoring.py` | FIFO round-trip matching per token; win = positive realized PnL on a sell; score = 0.6·win_rate + 0.2·history + 0.2·volume. The same matching yields quantity-weighted holding durations → `median_hold_minutes`, plus `trades_per_day`. |
 | `discovery/filters.py` | Admission gate: history days, trade count, ≥20 round trips before win rate counts, win rate, activity, net profitability, token-quality sampling (median liquidity + mcap band) — plus the **copyability gates**: `trades_per_day ≤ filters.max_trades_per_day` (40) and `median_hold_minutes ≥ filters.min_median_hold_minutes` (30). Profitable-but-uncopyable (arb/MEV) fails here by design. |
-| `chain/birdeye.py` | `BirdeyeClient`: `/trader/gainers-losers` leaderboard — optional extra source when a key exists; on-chain works without it. |
-| `discovery/scanner.py` | `TraderDiscoveryDaemon` (v4, **census-first, win-rate-ranked**). Operator doctrine: enumeration may be broad, but judgment is ONLY our own computed, windowed, bag-adjusted win rate — never a proxy. Primary enumerator: the **DEX census** — every sweep observes live flow of the configured DEX programs (Jupiter v6, Raydium v4, Orca Whirlpool), tallies fee payers in the persistent `sightings` table, and promotes wallets seen trading in ≥`census_min_sightings` sweeps. Secondary feeders into the same measurement: winners' top holders (3 RPC calls/winner) and the Birdeye leaderboard when keyed. All candidates: pre-screen (thin-by-arithmetic + machine-frequency), then full history scan to `max(min_history_days, skill_window_days)` depth, then windowed scoring. |
+| `chain/solana_tracker.py` | `SolanaTrackerClient`: `/v2/pnl/leaderboard/top` — windowed PnL leaderboard with win rates, arb bots excluded upstream. Primary leaderboard feeder when `chain.solana_tracker_api_key` is set (free tier 10k req/month); every failure raises `SolanaTrackerError` for fall-through. |
+| `chain/birdeye.py` | `BirdeyeClient`: `/trader/gainers-losers` leaderboard — secondary leaderboard feeder when a key exists; on-chain works without it. |
+| `discovery/scanner.py` | `TraderDiscoveryDaemon` (v4, **census-first, win-rate-ranked**). Operator doctrine: enumeration may be broad, but judgment is ONLY our own computed, windowed, bag-adjusted win rate — never a proxy. Primary enumerator: the **DEX census** — every sweep observes live flow of the configured DEX programs (Jupiter v6, Raydium v4, Orca Whirlpool), tallies fee payers in the persistent `sightings` table, and promotes wallets seen trading in ≥`census_min_sightings` sweeps. Leaderboard services (Solana Tracker → Birdeye, keyed, throttled to `discovery.leaderboard_interval_sec` even on failure) and winners' top holders (3 RPC calls/winner) feed the same measurement; ANY service failure falls through to on-chain. Service win rates only order the deep-scan queue. All candidates: pre-screen (thin-by-arithmetic + machine-frequency), then full history scan to `max(min_history_days, skill_window_days)` depth, then windowed scoring. **Roster-full does not idle discovery**: sweeps keep hunting, and a passing candidate whose score clears the weakest followed trader's by `discovery.replace_margin` evicts it automatically (`trader_retired` with "replaced by …"; positions stay with their wallet under the panic stop). |
 | Skill metrics | Computed per candidate over `discovery.skill_window_days` (90): **adjusted win rate** (every stale bag — unsold in-window inventory older than `filters.stale_bag_days` (7d) with ≥0.05 SOL cost — counts as a loss), **SHARP** (per-trade Sharpe: mean return per SOL deployed ÷ stdev, capped ±10, needs ≥5 closed trades; gate `filters.min_sharpe` = 0.1), realized PnL, holds, trades/day. History/activity gates use the FULL record so windowing can't dodge the 90-day requirement. Deposits/transfers never enter any number — PnL is swap round trips only. |
 | `risk/token_safety.py` | Structural honeypot screen: mint/freeze authority must be revoked, top-10 holders ≤50% of supply, liquidity floor, mcap band, pair ≥14d old. Unavailable safety data ⇒ unsafe. 30-min cache. |
 | `risk/engine.py` | `RiskEngine.evaluate_entry`: size = min(equity·per_trade_fraction, 1% of pool liquidity − already invested, cash − reserve [new entries only], per-position ceiling). Rejects under 0.05 SOL with the binding constraint named. |
 | `risk/atr.py` | 1-minute candles from price marks; Wilder ATR(14); trailing stop = peak − 3.5·ATR; no stop until warm. |
-| `trading/executor.py` | `TradeExecutor` (ABC) → `PaperExecutor` (liquidity-derived slippage model, flat fee) / `LiveJupiterExecutor` (quote → build → sign via keystore → send). |
+| `trading/executor.py` | `TradeExecutor` (ABC) → `PaperExecutor` (liquidity-derived slippage model, flat fee) / `LiveJupiterExecutor` (quote → build → sign via keystore → send → **confirm on chain → reconstruct actual amounts from the landed tx**; the quote only sizes the order). Every live attempt records a `Receipt` (confirmed/failed/timeout, quoted vs actual, fee, slot) via `AppContext.record_receipt` → DB + `receipt_recorded` event. Timeout past 100s is definitive (blockhash expiry), so failed closes safely keep the position open. |
 | `trading/portfolio.py` | `PortfolioManager`: wallets, positions, balances, exposure snapshots, all mutations persisted + broadcast. |
 | `trading/engine.py` | `TradingEngine`: the only caller of executors. Buy: market data → safety → exposure → risk verdict → fill. Sell: full close on trader exit. Panic/manual closes. Executor choice: live only for an armed live wallet. |
 | `trading/follower.py` | `FollowDaemon`: per-trader signature polling against `follow_cursor`, oldest-first replay of new swaps into `CopySignal`s. First contact arms the cursor without replaying history. |
@@ -61,8 +62,10 @@ open the browser.
 `snapshot`, `portfolio_tick`, `wallet_added/update`, `position_opened/
 resized/closed`, `trader_candidate/admitted/rejected/retired`,
 `discovery_scan`, `copy_signal`, `risk_rejected`, `execution_error`,
-`trade_executed`, `config_changed`, `keystore_unlocked`,
-`ping`. Payloads are the domain objects' `to_dict()` forms.
+`trade_executed`, `receipt_recorded`, `config_changed`,
+`keystore_unlocked`, `ping`. Payloads are the domain objects' `to_dict()`
+forms. The snapshot additionally carries `fills` and `receipts` (last 50
+each); `GET /api/receipts` lists the full receipt trail.
 
 ## Frontend (`frontend/`)
 
@@ -123,7 +126,7 @@ unless you also plan to keep the key.
 |---|---|---|
 | Follower, 10 traders @ 12s poll | ~0.83 calls/s | ~2.2M ⚠ over |
 | Follower, 10 traders @ 45s poll | ~0.22 calls/s | ~580k |
-| Discovery, 60 calls / 300s tick | ~0.2 calls/s | ~520k (stops when roster is full) |
+| Discovery, 60 calls / 300s tick | ~0.2 calls/s | ~520k (runs even when the roster is full — it hunts for upgrades) |
 
 A full roster at the default 12s poll would exhaust a 1M free tier in
 roughly two weeks. Because `TraderSubscriber` already delivers trades by
@@ -193,4 +196,6 @@ for discovery: JUP, JTO, PYTH, RAY, ORCA, WIF, BONK (editable).
 - Trader stats freeze at admission; no ongoing re-scoring yet.
 - ATR price sampling only runs while positions are open (stop warms up
   during the first ~15 minutes of a position).
-- Live executor is code-complete but has never signed a real transaction.
+- Live executor confirms on chain and records receipts; signing is
+  unit-tested, but no real mainnet swap has been sent yet (dress
+  rehearsal on a throwaway wallet still pending, see [[Tasks]]).

@@ -3,6 +3,64 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — live path hardened: confirm → reconstruct → receipt (2026-08-17)
+
+- [x] **M6 closed (was: REQUIRED BEFORE LIVE IS EVER ARMED).**
+      `LiveJupiterExecutor` no longer books anything from the quote:
+      send → poll `getSignatureStatuses` (searchTransactionHistory) →
+      on confirmation fetch the landed tx and reconstruct the ACTUAL
+      amounts via `TradeReconstructor` (network fee from meta.fee) →
+      only then return the Fill. Landed-but-reverted (`err`) raises;
+      unconfirmed past 100s raises — safe because the blockhash expires
+      ~60–90s after send, so "timeout" is a definitive no-execution
+      (engine aborts the close and the position stays open, correctly).
+      Reconstruction fallback: if the landed tx can't be fetched/parsed,
+      quote amounts are used and the receipt is flagged.
+- [x] **Receipts — the on-chain audit trail.** New `Receipt` domain
+      object + `receipts` table (quoted vs actual, fee, slot, blockTime,
+      status confirmed/failed/timeout, detail). EVERY live attempt
+      records one via `AppContext.record_receipt` (DB +
+      `receipt_recorded` event). Snapshot carries `receipts` (50),
+      REST `GET /api/receipts`. Frontend: feed lines (confirmed = trade
+      tone with actual SOL; failed/timeout = reject tone with detail),
+      and the live-wallet inspector shows CHAIN RECEIPTS (last 5, each
+      linking to solscan.io/tx/<sig>).
+- [x] **Signing mechanics unit-tested for the first time** (half of the
+      dress-rehearsal task): a real solders `VersionedTransaction` is
+      built, signed via the keystore path, and verified non-default in
+      `tests/test_live_receipts.py`. 194 tests green (8 new).
+
+## Done — PnL leaderboard service + automatic roster replacement (2026-08-17)
+
+- [x] **Solana Tracker Data API** as the primary leaderboard feeder
+      (`chain/solana_tracker.py`, `chain.solana_tracker_api_key`; free
+      tier: 10k req/month, 3 rps, signup at solanatracker.io/data-api).
+      `/v2/pnl/leaderboard/top` with days=90 (matches skill window),
+      excludeArbitrage, sort by win rate. Verified live: keyless call
+      401s and raises the typed error. Birdeye kept as secondary (its
+      free tier allows gainers-losers but 30k CU/month is tight).
+- [x] **Fall-through chain (operator requirement):** census always runs;
+      leaderboards (tracker → birdeye) only when keyed AND due per
+      `discovery.leaderboard_interval_sec` (900s ≈ 2.9k req/month);
+      ANY service failure — missing key, 429, outage — logs and falls
+      through to winners' holders. Failed attempts also start the
+      throttle window so a rate-limited service is never hammered.
+      Services only NOMINATE (service win rate orders the deep-scan
+      queue via `_service_rank`); judgment stays our on-chain scan.
+- [x] **Automatic replacement of the weakest followed trader (operator
+      requirement):** roster-full no longer idles discovery — sweeps
+      continue hunting. A candidate that passes admission while the
+      roster is full evicts the lowest-score followed trader iff its
+      score clears `discovery.replace_margin` (0.02) above the
+      incumbent's; else rejected with the honest "does not beat" reason.
+      Eviction mirrors manual unfollow: positions stay with the wallet,
+      panic stop keeps protecting them; `trader_retired` carries
+      "replaced by <addr>… (score a vs b)" and the feed shows it.
+      NOTE: discovery RPC spend no longer stops at roster-full — the
+      old "stops when full" line in the budget table is obsolete.
+- [x] 186 tests green (10 new: sourcing, fall-through, throttle,
+      replace/no-churn margin, roster-full-keeps-sweeping).
+
 ## Done — universe mode removed (2026-08-17)
 
 - [x] **Operator decision: no more `mode: paper|live`.** Paper and live
@@ -153,16 +211,20 @@ Context in [[Project]]; standing decisions in [[Claude]].
 
 ## Open — high value
 
-- [ ] **Ongoing trader re-scoring.** Stats freeze at admission; a followed
-      trader who decays should be auto-retired (win-rate window, drawdown
-      guard) and replaced from the candidate pool.
+- [ ] **Ongoing trader re-scoring.** Stats freeze at admission. The
+      replacement half shipped 2026-08-17 (stronger candidates now evict
+      the weakest followed trader automatically); still missing is the
+      other half: periodically RE-MEASURE followed traders so a decayed
+      trader's score drops and makes them evictable — today they keep
+      their admission-day score forever.
 - [ ] **Proportional sells.** Trader sells 30% → we currently close 100%.
       Needs the trader's token balance (1 extra RPC call per sell) to
       mirror the fraction.
-- [ ] **Live-path dress rehearsal.** The Jupiter+solders signing code has
-      never run against a real transaction. Before anyone arms live mode:
-      unit-test signing against a recorded swap transaction, then a
-      minimum-size real swap on a throwaway wallet.
+- [ ] **Live-path dress rehearsal (second half).** Signing is now
+      unit-tested against a synthetic VersionedTransaction (2026-08-17),
+      and every order confirms on chain with a receipt. Remaining before
+      arming real money: one minimum-size real swap on a throwaway
+      wallet to shake out Jupiter tx-format/fee surprises end-to-end.
 - [x] ~~Wallet-discovery quality pass~~ — superseded by discovery v2
       (2026-08-16 evening): seed harvesting removed (operator decision);
       Birdeye top-PnL leaderboard as primary source with Jupiter-program
@@ -253,9 +315,8 @@ Options (operator decision):
       galaxy `_memory` / frontend maps.
 - [ ] **M4 remainder:** persist discovery `_oldest_seen`/`_newest_seen`
       (currently memory-only; restarts lose depth progress).
-- [ ] **M6 remainder — REQUIRED BEFORE LIVE IS EVER ARMED:** the live
-      executor books fills from the Jupiter quote without confirming the
-      transaction landed; add confirmation polling before recording.
+- [x] ~~M6 remainder~~ — DONE 2026-08-17: live executor now confirms
+      every order on chain before booking (see "live path hardened").
 - [ ] **M7:** config PUT lacks shape validation for lists/nested values
       (a string for `seed_mints` becomes a char list); validate types.
 - [ ] **M8:** follower worst-case RPC demand (10 traders × 6 calls / 12s)

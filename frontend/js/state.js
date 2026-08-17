@@ -26,6 +26,7 @@ export class Store {
       lastScanAt: 0,
       discovery: null,
       feed: [],
+      receipts: [],
       solPrice: 0,
       config: null,
     };
@@ -70,6 +71,7 @@ export class Store {
     this.state.wallets = new Map(data.wallets.map((w) => [w.id, w]));
     this.state.traders = new Map(data.traders.map((t) => [t.address, t]));
     this.state.positions = new Map(data.positions.map((p) => [p.id, p]));
+    this.state.receipts = data.receipts || [];
     this.state.watchTokens = new Map();
     this.state.feed = [];
     for (const fill of (data.fills || []).slice(0, 12).reverse()) {
@@ -162,8 +164,10 @@ export class Store {
 
   _on_trader_retired(data, ts) {
     this.state.traders.set(data.address, data);
+    const why = data.rejection_reason;
     this._pushFeed("trader",
-      `Unfollowed <b>${esc(data.address.slice(0, 4))}…</b>`, ts);
+      `Unfollowed <b>${esc(data.address.slice(0, 4))}…</b>`
+      + (why ? ` — ${esc(why)}` : ""), ts);
   }
 
   _on_discovery_scan(data, ts) {
@@ -188,6 +192,24 @@ export class Store {
 
   _on_execution_error(data, ts) {
     this._pushFeed("reject", `Execution error: ${esc(data.error)}`, ts);
+  }
+
+  _on_receipt_recorded(data, ts) {
+    // The on-chain audit trail: every live order attempt lands here,
+    // confirmed or not, with its transaction signature.
+    this.state.receipts.unshift(data);
+    if (this.state.receipts.length > 50) this.state.receipts.pop();
+    const sig = `${data.signature.slice(0, 6)}…`;
+    if (data.status === "confirmed") {
+      this._pushFeed("trade",
+        `Receipt: <b>${esc(data.side.toUpperCase())}</b> confirmed on ` +
+        `chain — ${data.actual_sol.toFixed(4)} ◎ actual · ${esc(sig)}`, ts);
+    } else {
+      this._pushFeed("reject",
+        `Receipt: <b>${esc(data.side.toUpperCase())}</b> ` +
+        `${esc(data.status)} — ` +
+        `${esc(data.detail || "order did not execute")} · ${esc(sig)}`, ts);
+    }
   }
 
   _on_config_changed(data) { this.state.config = data; }

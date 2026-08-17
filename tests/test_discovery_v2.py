@@ -51,12 +51,13 @@ def big_swap(trader):
 
 
 def make_daemon(db, bus, config_store, provider=None, birdeye=None,
-                jupiter=None, market=None):
+                jupiter=None, market=None, tracker=None):
     provider = provider or FakeProvider()
     registry = TraderRegistry(db, bus)
     daemon = TraderDiscoveryDaemon(
         config_store, provider, market or FakeMarketData(), registry, db,
-        bus, assign_wallet=lambda: "w1", birdeye=birdeye, jupiter=jupiter)
+        bus, assign_wallet=lambda: "w1", birdeye=birdeye, jupiter=jupiter,
+        tracker=tracker)
     return provider, registry, daemon
 
 
