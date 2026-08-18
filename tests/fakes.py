@@ -24,8 +24,14 @@ class FakeProvider:
         self.sent_transactions: list[str] = []
         self.fail_transactions: set[str] = set()
         self.signature_status: dict[str, dict[str, Any]] = {}
+        # Per-address call tally, so tests can prove no RPC was spent.
+        self.signature_calls: dict[str, int] = {}
+
+    def signature_reads_for(self, address) -> int:
+        return self.signature_calls.get(address, 0)
 
     def get_signatures(self, address, limit=100, before=None):
+        self.signature_calls[address] = self.signature_calls.get(address, 0) + 1
         entries = self.signatures.get(address, [])
         if before is not None:
             signatures = [e["signature"] for e in entries]
@@ -74,12 +80,18 @@ class FakeTracker:
         self.fail = fail
         self.calls = 0
 
-    def top_traders(self, window_days=90, limit=100, min_trades=20):
+    def top_traders(self, window_days=90, limit=100, min_trades=20,
+                    min_active_days=0, sort="win_percentage",
+                    max_trades_per_day=None, max_pages=1):
         self.calls += 1
         if self.fail:
             from olala.chain.solana_tracker import SolanaTrackerError
             raise SolanaTrackerError("scripted failure")
-        return self.traders[:limit]
+        kept = [t for t in self.traders
+                if max_trades_per_day is None
+                or t.get("trades_per_day") is None
+                or t["trades_per_day"] <= max_trades_per_day]
+        return kept[:limit]
 
 
 class FakeJupiterTokens:

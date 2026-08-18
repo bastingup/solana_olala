@@ -26,7 +26,7 @@ open the browser.
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Dataclass config: defaults ← `config.yaml` ← REST updates (persisted back). Sections: server, chain, filters, risk, discovery, follow, paper. |
+| `config.py` | Dataclass config: defaults ← master `config.yaml` ← active profile file ← REST updates (each section persisted back to the file that owns it). **Master** (gitignored, holds secrets): `dev_mode`, `hft`, server, chain, **risk**, paper. **Profiles** (tracked, no secrets): `config.hft.yaml` / `config.slow.yaml` carry filters, discovery, follow. `hft: true|false` picks the profile at boot. Legacy single-file configs still load. |
 | `events.py` | `EventBus`: thread-safe pub/sub; per-client bounded queues (drop-oldest on lag). |
 | `domain/models.py` | Value objects: `TokenInfo`, `ObservedTrade`, `TraderStats`, `TraderProfile`, `CopySignal`, `RiskVerdict`, `Position`, `Fill`; enums for sides/statuses/exit reasons. |
 | `domain/wallet.py` | `Wallet` (ABC) → `SolanaWallet` → `PaperSolanaWallet` (local balance) / `LiveSolanaWallet` (balance from RPC, keys in keystore). Future chains subclass `Wallet`. |
@@ -40,7 +40,7 @@ open the browser.
 | `discovery/reconstruction.py` | `TradeReconstructor`: DEX-agnostic swap detection by diffing pre/post balances (exactly one non-SOL token moving against SOL). Fee-payer fee excluded from traded amount. |
 | `discovery/scoring.py` | FIFO round-trip matching per token; win = positive realized PnL on a sell; score = 0.6·win_rate + 0.2·history + 0.2·volume. The same matching yields quantity-weighted holding durations → `median_hold_minutes`, plus `trades_per_day`. |
 | `discovery/filters.py` | Admission gate: history days, trade count, ≥20 round trips before win rate counts, win rate, activity, net profitability, token-quality sampling (median liquidity + mcap band) — plus the **copyability gates**: `trades_per_day ≤ filters.max_trades_per_day` (40) and `median_hold_minutes ≥ filters.min_median_hold_minutes` (30). Profitable-but-uncopyable (arb/MEV) fails here by design. |
-| `chain/solana_tracker.py` | `SolanaTrackerClient`: `/v2/pnl/leaderboard/top` — windowed PnL leaderboard with win rates, arb bots excluded upstream. Primary leaderboard feeder when `chain.solana_tracker_api_key` is set (free tier 10k req/month); every failure raises `SolanaTrackerError` for fall-through. |
+| `chain/solana_tracker.py` | `SolanaTrackerClient`: `/v2/pnl/leaderboard/top` — windowed PnL leaderboard with win rates, arb bots excluded upstream. Primary leaderboard feeder when `chain.solana_tracker_api_key` is set (free tier 10k req/month); every failure raises `SolanaTrackerError` for fall-through. Our floors are pushed to the service (`minTrades` from `filters.min_trades`, `minDays` from `discovery.leaderboard_min_active_days`); the API has **no maximum-activity filter**, so `trades_per_day` is derived from the payload and the scanner caps on it client-side before spending RPC. |
 | `discovery/scanner.py` | `TraderDiscoveryDaemon` (v4, **census-first, win-rate-ranked**). Operator doctrine: enumeration may be broad, but judgment is ONLY our own computed, windowed, bag-adjusted win rate — never a proxy. Primary enumerator: the **DEX census** — every sweep observes live flow of the configured DEX programs (Jupiter v6, Raydium v4, Orca Whirlpool), tallies fee payers in the persistent `sightings` table, and promotes wallets seen trading in ≥`census_min_sightings` sweeps. The Solana Tracker leaderboard (keyed, throttled to `discovery.leaderboard_interval_sec` even on failure) and winners' top holders (3 RPC calls/winner) feed the same measurement; ANY service failure falls through to on-chain. Service win rates only order the deep-scan queue. All candidates: pre-screen (thin-by-arithmetic + machine-frequency), then full history scan to `max(min_history_days, skill_window_days)` depth, then windowed scoring. **Roster-full does not idle discovery**: sweeps keep hunting, and a passing candidate whose score clears the weakest followed trader's by `discovery.replace_margin` evicts it automatically (`trader_retired` with "replaced by …"; positions stay with their wallet under the panic stop). |
 | Skill metrics | Computed per candidate over `discovery.skill_window_days` (90): **adjusted win rate** (every stale bag — unsold in-window inventory older than `filters.stale_bag_days` (7d) with ≥0.05 SOL cost — counts as a loss), **SHARP** (per-trade Sharpe: mean return per SOL deployed ÷ stdev, capped ±10, needs ≥5 closed trades; gate `filters.min_sharpe` = 0.1), realized PnL, holds, trades/day. History/activity gates use the FULL record so windowing can't dodge the 90-day requirement. Deposits/transfers never enter any number — PnL is swap round trips only. |
 | `risk/token_safety.py` | Structural honeypot screen: mint/freeze authority must be revoked, top-10 holders ≤50% of supply, liquidity floor, mcap band, pair ≥14d old. Unavailable safety data ⇒ unsafe. 30-min cache. |
@@ -119,20 +119,21 @@ public-safe 2.0 — `HeliusRpcProvider` raises its own floor to 8, so the
 config value is the public fallback, not the Helius rate. Don't raise it
 unless you also plan to keep the key.
 
-**Sustained usage matters on a free plan (~1M credits/month):**
+**Sustained usage matters on a free plan (~1M credits/month). The
+operator's HF-pivot ledger (2026-08-18, verified by script — 0.99M/mo):**
 
-| Source | Rate | Monthly |
+| Source | Config | Monthly |
 |---|---|---|
-| Follower, 10 traders @ 12s poll | ~0.83 calls/s | ~2.2M ⚠ over |
-| Follower, 10 traders @ 45s poll | ~0.22 calls/s | ~580k |
-| Discovery, 60 calls / 300s tick | ~0.2 calls/s | ~520k (runs even when the roster is full — it hunts for upgrades) |
+| Discovery | 75 calls / 300s sweep | ~648k |
+| Follower safety poll | 5 traders @ 90s | ~144k |
+| Copy fetches (push-triggered) | 5 × ~500 trades/day | ~150k |
+| Token-safety screens | 30-min cache | ~45k |
 
-A full roster at the default 12s poll would exhaust a 1M free tier in
-roughly two weeks. Because `TraderSubscriber` already delivers trades by
-push within seconds, the interval poll is only a safety net — raising
-`follow.poll_interval_sec` to 45 costs almost no copy latency and brings
-usage inside the free tier. Left at 12 by default (maximum fidelity if
-push ever drops); this is the operator's call.
+Push (`TraderSubscriber`) delivers copies in ~2s, so the interval poll
+is only a safety net — its interval is the main budget lever. Deep
+scans dominate the ledger: an HF candidate (~7–10k tx fetches at the
+7d window) reaches a verdict in ~8–12h at this pace. Solana Tracker:
+450s polling ≈ 5.8k of the 10k/month free tier.
 
 ## Arming model (per-wallet, single switch)
 

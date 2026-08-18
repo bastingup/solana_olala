@@ -1,13 +1,33 @@
 """Application configuration.
 
-Configuration is layered: built-in defaults, overridden by ``config.yaml``
-next to the backend package, overridden at runtime through the REST API.
-Runtime changes are persisted back to the YAML file so they survive restarts.
+Configuration is layered: built-in defaults, overridden by the master
+``config.yaml``, overridden by the active TRADING PROFILE file, then by
+runtime REST updates (persisted back to whichever file owns the section).
+
+The master file holds identity and machine-wide settings — the mode flags
+(``dev_mode``, ``hft``), server, chain credentials, risk exposure, and
+paper wallets. The strategy-shaped sections live in one profile file per
+trading style::
+
+    config.yaml         master: modes + risk exposure + credentials
+    config.hft.yaml     filters/discovery/follow for high-frequency
+    config.slow.yaml    filters/discovery/follow for slow/swing
+
+``hft: true`` in the master selects ``config.hft.yaml``; ``false`` selects
+``config.slow.yaml``. Switching styles is therefore a one-line edit plus a
+restart — no code changes, no value hunting across a single large file.
+
+A legacy single-file config still works: profile sections found in the
+master are applied first, and the profile file (when present) overrides
+them. The mode flags always live in the master, so the running config can
+never disagree with what the operator set — a parallel-file design that
+hid the flag from the UI was reverted once before for exactly that.
 """
 
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -15,7 +35,20 @@ from typing import Any
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+
+# Sections that stay in the master file: identity, credentials, money at
+# risk, and the simulated fleet — all independent of trading style.
+MASTER_SECTIONS = ("server", "chain", "risk", "paper")
+# Sections that define a trading style and therefore live in a profile.
+PROFILE_SECTIONS = ("filters", "discovery", "follow")
+
+# The leaderboard service accepts exactly these ranking fields; anything
+# else would silently fall back to a server-side default, so it is
+# rejected at load instead.
+VALID_LEADERBOARD_SORTS = ("win_percentage", "realized", "trades")
 
 
 @dataclass
@@ -108,6 +141,19 @@ class DiscoveryConfig:
     # free API tier lasts the month; between polls the on-chain sources
     # carry the sweep. 900s ≈ 2.9k requests/month.
     leaderboard_interval_sec: int = 900
+    # Nominations must show sustained trading: minimum active trading
+    # days inside the window. The service's own default is 3, which
+    # nominates week-old wallets that can never clear our history gate.
+    leaderboard_min_active_days: int = 30
+    # Leaderboard ranking: "win_percentage" (service win rate),
+    # "realized" (net realized PnL) or "trades" (most active). The
+    # deep-scan queue follows this order.
+    leaderboard_sort: str = "win_percentage"
+    # Pages walked per poll (100 wallets each) until enough copyable
+    # nominees are found — the board's top is dominated by ultra-HF
+    # machines our activity cap discards, so depth buys usable names.
+    # Budget: pages × polls/month must stay inside the service tier.
+    leaderboard_pages: int = 2
     # Roster replacement: a passing candidate evicts the weakest followed
     # trader only when its score clears the incumbent's by this margin —
     # hysteresis so statistical noise cannot churn the roster.
@@ -142,6 +188,11 @@ class AppConfig:
     # paper activity flows immediately (you will be copying bots and
     # trash — that is the point). Live wallets refuse to arm while on.
     dev_mode: bool = False
+    # Trading profile selector: True loads config.hft.yaml (chase
+    # high-frequency traders), False loads config.slow.yaml (slow/swing
+    # traders). Read at boot only — changing it needs a restart, exactly
+    # like dev_mode, because it reshapes the whole discovery pipeline.
+    hft: bool = False
     server: ServerConfig = field(default_factory=ServerConfig)
     chain: ChainConfig = field(default_factory=ChainConfig)
     filters: FilterConfig = field(default_factory=FilterConfig)
@@ -157,10 +208,16 @@ class AppConfig:
 
 
 class ConfigStore:
-    """Thread-safe owner of the live :class:`AppConfig`."""
+    """Thread-safe owner of the live :class:`AppConfig`.
 
-    def __init__(self, path: Path = CONFIG_PATH) -> None:
+    Loads the master file plus the profile file its ``hft`` flag selects,
+    and writes each section back to the file that owns it.
+    """
+
+    def __init__(self, path: Path = CONFIG_PATH,
+                 profile_dir: Path | None = None) -> None:
         self._path = path
+        self._profile_dir = profile_dir or path.parent
         self._lock = threading.RLock()
         self._config = self._load()
 
@@ -169,13 +226,27 @@ class ConfigStore:
         with self._lock:
             return copy.deepcopy(self._config)
 
-    def update(self, patch: dict[str, Any]) -> AppConfig:
-        """Apply a partial update to mutable sections and persist it."""
+    @property
+    def profile_name(self) -> str:
+        """Name of the active trading profile ("hft" or "slow")."""
         with self._lock:
+            return "hft" if self._config.hft else "slow"
+
+    def profile_path(self, name: str | None = None) -> Path:
+        return self._profile_dir / f"config.{name or self.profile_name}.yaml"
+
+    def update(self, patch: dict[str, Any]) -> AppConfig:
+        """Apply a partial update to mutable sections and persist it.
+
+        Transactional: the patch lands on a copy first, so a rejected
+        value never leaves a half-mutated config behind.
+        """
+        with self._lock:
+            updated = copy.deepcopy(self._config)
             for section, values in patch.items():
                 if section not in AppConfig._MUTABLE_SECTIONS:
                     raise ValueError(f"section not updatable: {section!r}")
-                target = getattr(self._config, section)
+                target = getattr(updated, section)
                 if not isinstance(values, dict):
                     raise ValueError(f"section {section!r} expects an object")
                 for key, value in values.items():
@@ -183,6 +254,8 @@ class ConfigStore:
                         raise ValueError(f"unknown option {section}.{key}")
                     current = getattr(target, key)
                     setattr(target, key, type(current)(value))
+            _validate(updated)
+            self._config = updated
             self._save()
             return copy.deepcopy(self._config)
 
@@ -194,15 +267,55 @@ class ConfigStore:
             # ignored here and dropped on the next save.
             if "dev_mode" in raw:
                 config.dev_mode = bool(raw["dev_mode"])
-            for section in ("server", "chain", "filters", "risk",
-                            "discovery", "follow", "paper"):
-                values = raw.get(section) or {}
-                target = getattr(config, section)
-                for key, value in values.items():
-                    if hasattr(target, key):
-                        setattr(target, key, value)
+            if "hft" in raw:
+                config.hft = bool(raw["hft"])
+            # Profile sections are applied from the master FIRST so a
+            # legacy single-file config keeps working; the profile file
+            # below then overrides them.
+            _apply(config, raw, MASTER_SECTIONS + PROFILE_SECTIONS)
+
+        profile = self.profile_path("hft" if config.hft else "slow")
+        if profile.exists():
+            raw_profile = yaml.safe_load(profile.read_text()) or {}
+            _apply(config, raw_profile, PROFILE_SECTIONS)
+            logger.info("config: master %s + profile %s",
+                        self._path.name, profile.name)
+        elif self._path.exists():
+            logger.warning(
+                "config: profile %s not found — running on master file "
+                "plus built-in defaults", profile.name)
+        _validate(config)
         return config
 
     def _save(self) -> None:
-        self._path.write_text(
-            yaml.safe_dump(self._config.to_dict(), sort_keys=False))
+        """Persist each section to the file that owns it.
+
+        Splitting the write the same way as the read is what keeps the
+        profile structure intact across runtime config updates.
+        """
+        full = self._config.to_dict()
+        master = {"dev_mode": full["dev_mode"], "hft": full["hft"]}
+        master.update({s: full[s] for s in MASTER_SECTIONS})
+        self._path.write_text(yaml.safe_dump(master, sort_keys=False))
+
+        profile = {s: full[s] for s in PROFILE_SECTIONS}
+        self.profile_path().write_text(
+            yaml.safe_dump(profile, sort_keys=False))
+
+
+def _apply(config: AppConfig, raw: dict[str, Any],
+           sections: tuple[str, ...]) -> None:
+    for section in sections:
+        values = raw.get(section) or {}
+        target = getattr(config, section)
+        for key, value in values.items():
+            if hasattr(target, key):
+                setattr(target, key, value)
+
+
+def _validate(config: AppConfig) -> None:
+    if config.discovery.leaderboard_sort not in VALID_LEADERBOARD_SORTS:
+        raise ValueError(
+            f"discovery.leaderboard_sort must be one of "
+            f"{VALID_LEADERBOARD_SORTS}, got "
+            f"{config.discovery.leaderboard_sort!r}")

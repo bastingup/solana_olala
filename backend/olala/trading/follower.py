@@ -26,8 +26,11 @@ from .engine import TradingEngine
 
 logger = logging.getLogger(__name__)
 
-SIGNATURES_PER_POLL = 15
-MAX_TX_FETCHES_PER_TRADER = 5
+# Sized for high-frequency traders: the poll window must outrun the
+# fastest burst between two push-triggered polls (~1.5s apart), and the
+# fetch budget drains a backlog quickly without starving other traders.
+SIGNATURES_PER_POLL = 30
+MAX_TX_FETCHES_PER_TRADER = 10
 PROCESSED_MEMORY = 500
 
 

@@ -64,6 +64,7 @@ export class Store {
   _on_snapshot(data) {
     this.state.hydrated = true;
     this.state.devMode = Boolean(data.dev_mode);
+    this.state.profile = data.profile || "";
     this.state.keystore = data.keystore;
     this.state.solPrice = data.sol_price_usd || 0;
     this.state.config = data.config || null;

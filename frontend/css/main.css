@@ -166,6 +166,13 @@ button {
   background: rgba(34, 211, 238, 0.14);
 }
 
+/* Active trading profile: structural state, so it speaks purple. */
+.mode-badge[data-mode="hft"] {
+  border-color: var(--nebula);
+  color: var(--nebula-soft);
+  background: rgba(168, 85, 247, 0.18);
+}
+
 /* ---------- layout ---------- */
 
 #layout {

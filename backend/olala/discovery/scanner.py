@@ -53,7 +53,10 @@ from .scoring import TraderScorer
 
 logger = logging.getLogger(__name__)
 
-SIGNATURE_BATCH = 50
+# getSignaturesForAddress returns up to 1,000 entries for the same one
+# credit, so large batches make history listing nearly free — the deep
+# scan's cost is the per-transaction fetches, as it should be.
+SIGNATURE_BATCH = 500
 TX_CALLS_PER_CANDIDATE = 12
 WINNER_COOLDOWN_SEC = 6 * 3600.0
 
@@ -105,8 +108,10 @@ class TraderDiscoveryDaemon(Daemon):
         # attempted even on failure so a rate-limited service is not
         # hammered every sweep.
         self._last_leaderboard_at = 0.0
-        # Service-reported win rate per nominated wallet — only used to
-        # decide who gets deep-scanned FIRST; judgment stays ours.
+        # Service leaderboard position per nominated wallet (higher =
+        # better) — only used to decide who gets deep-scanned FIRST,
+        # following whatever ranking the operator configured; judgment
+        # stays ours.
         self._service_rank: dict[str, float] = {}
         self._reconstructor = TradeReconstructor()
         self._scorer = TraderScorer()
@@ -236,14 +241,23 @@ class TraderDiscoveryDaemon(Daemon):
     def _harvest_from_tracker(self, config, budget: RpcBudget) -> None:
         """Solana Tracker's PnL leaderboard: wallets the service already
         measured across the whole chain. Nomination only — every wallet
-        still passes the pre-screen and the full on-chain deep scan."""
+        still passes the pre-screen and the full on-chain deep scan.
+
+        The client pages the board and applies our activity ceiling from
+        payload data (the API has no maximum-activity filter), so every
+        entry arriving here is already copyable-cadence and cost no RPC.
+        """
         entries = self._tracker.top_traders(
-            window_days=config.discovery.skill_window_days)
+            window_days=config.discovery.skill_window_days,
+            min_trades=config.filters.min_trades,
+            min_active_days=config.discovery.leaderboard_min_active_days,
+            sort=config.discovery.leaderboard_sort,
+            max_trades_per_day=config.filters.max_trades_per_day,
+            max_pages=config.discovery.leaderboard_pages)
         found = 0
-        for entry in entries:
+        for position, entry in enumerate(entries):
             address = entry["address"]
-            if entry.get("win_rate") is not None:
-                self._service_rank[address] = entry["win_rate"]
+            self._service_rank[address] = float(len(entries) - position)
             if self._registry.get(address) is not None:
                 continue
             if not self._pre_screen(config, address, budget):

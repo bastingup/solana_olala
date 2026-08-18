@@ -87,8 +87,8 @@ class AppContext:
             TraderSubscriber(self.provider, self.registry,
                              on_activity=follower.poll_now),
         ]
-        logger.info("application context ready (provider: %s%s)",
-                    self.provider.name,
+        logger.info("application context ready (provider: %s, profile: "
+                    "%s%s)", self.provider.name, self.store.profile_name,
                     ", dev mode" if config.dev_mode else "")
 
     # -- cross-service policies -------------------------------------------
@@ -128,6 +128,9 @@ class AppContext:
         snapshot = self.portfolio.snapshot()
         snapshot.update({
             "dev_mode": self.store.config.dev_mode,
+            # The active trading profile rides in the snapshot so the UI
+            # can never disagree with the file the backend actually read.
+            "profile": self.store.profile_name,
             "keystore": {"exists": self.keystore.exists,
                          "locked": self.keystore.is_locked},
             "traders": [p.to_dict() for p in self.registry.all()],

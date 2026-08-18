@@ -37,8 +37,23 @@ memory, and the operator relies on them across sessions.
   paid accounts without asking.
 - **Strict trader filters** are the shipped defaults (90d history, 200
   trades, 60% win rate, 24h activity, $20M–$5B mcap band, $500k
-  liquidity). The operator chose "strict" deliberately; loosen only in
-  config, never in code.
+  liquidity). Loosen only in config, never in code.
+- **Config is split by trading style (operator decision 2026-08-18):**
+  master `config.yaml` holds the mode flags (`dev_mode`, `hft`),
+  credentials and RISK EXPOSURE; `config.hft.yaml` /
+  `config.slow.yaml` hold filters/discovery/follow. `hft: true` picks
+  the HFT profile at boot. Risk stays in the master ON PURPOSE —
+  switching strategy must never change how much money a trade touches.
+  Keep the flags in the master and the active profile in the snapshot:
+  the earlier parallel-file design was reverted precisely because the
+  flag was invisible to the running config.
+- **The HFT profile** (operator's current setting): 7d judgment window
+  (persistence via the 30 active-day nomination floor), 600 trades/day
+  ceiling, hold-time gate off, leaderboard sorted by realized PnL.
+  Operator explicitly accepts service win-rate distortion; judgment =
+  net realized PnL + SHARP. The 2-5s copy latency caveat is recorded in
+  [[Tasks]] — paper PnL of the copies is the arbiter before live is
+  ever considered.
 - **Long-only, DEX-only, copy-only.** No shorts, no hedges, no
   self-originated trades. Risk math gates everything; a blocked trade is
   declined, never squeezed through.
@@ -90,3 +105,13 @@ memory, and the operator relies on them across sessions.
 - Public RPC is ~2 req/s shared across all daemons via token-bucket rate
   limiters. Qualifying one trader takes hours; that is expected, not a
   bug. The scan banner tells the operator so.
+- **The DEX census is a bot generator by construction** — live DEX flow
+  is dominated by high-frequency bots, so wallets seen repeatedly in it
+  are usually bots (measured twice: MVP round, and again 2026-08-18).
+  The leaderboard is NOT the bot source: 85/100 of its top-100 are at
+  human cadence. When "bots blocked" spikes, suspect the census, not the
+  service.
+- **Trades/day and signatures/day are different metrics.** The
+  pre-screen measures on-chain SIGNATURE rate (all activity: transfers,
+  failed txs, ATA creation), which runs far above a wallet's swap rate.
+  The ceiling is `max_trades_per_day × 5` for exactly that reason.

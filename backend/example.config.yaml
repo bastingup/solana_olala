@@ -1,27 +1,43 @@
+# =====================================================================
+# MASTER CONFIG EXAMPLE — copy to config.yaml and fill in your keys.
+#
+# config.yaml is gitignored (it holds credentials). The two trading
+# profiles are NOT — they are shareable presets:
+#     hft: true   ->  config.hft.yaml    (high-frequency traders)
+#     hft: false  ->  config.slow.yaml   (slow / swing traders)
+#
+# Both flags below are read at BOOT ONLY — change one, restart.
+# =====================================================================
+
+# Bypasses trader-admission and token-safety gates so paper activity
+# flows immediately. Arming live wallets is refused while this is on.
 dev_mode: false
+
+# Trading profile selector — see the two config.<profile>.yaml files.
+hft: false
+
 server:
   host: 127.0.0.1
   port: 8420
+
 chain:
   rpc_endpoints:
   - https://api.mainnet-beta.solana.com
   - https://solana-rpc.publicnode.com
+  # Optional. A free key upgrades throughput from ~2 to 8 req/s.
   helius_api_key:
-  # Optional PnL leaderboard feeder. Leave empty to run purely on-chain
-  # (census + winners' holders); any failure or rate limit falls through
-  # to on-chain automatically.
+  # Optional PnL leaderboard feeder. Empty = purely on-chain discovery
+  # (census + winners' holders); any failure falls through to on-chain.
   # Free key: https://www.solanatracker.io/data-api (10k requests/month)
   solana_tracker_api_key:
   requests_per_second: 2.0
   request_timeout_sec: 15.0
-filters:
-  min_history_days: 120
-  min_trades: 60
-  min_win_rate: 0.75
-  max_inactive_hours: 48
-  min_token_market_cap_usd: 20000000.0
-  min_token_liquidity_usd: 500000.0
-  max_token_market_cap_usd: 5000000000.0
+
+# ---------------------------------------------------------------------
+# RISK EXPOSURE — how much money any single trade may touch. Deliberately
+# NOT part of a trading profile: switching strategy must never silently
+# change your exposure.
+# ---------------------------------------------------------------------
 risk:
   max_liquidity_fraction: 0.01
   reserve_fraction: 0.3
@@ -29,26 +45,11 @@ risk:
   max_positions_per_wallet: 8
   atr_period: 14
   atr_stop_multiplier: 3.5
+  # LP vaults count toward this, so values below ~0.3 reject almost
+  # every real token.
   max_token_top10_holder_fraction: 0.5
-discovery:
-  scan_interval_sec: 120
-  rpc_calls_per_scan: 400
-  census_tx_sample: 16
-  census_min_sightings: 2
-  winners_per_scan: 4
-  max_candidates_per_scan: 200
-  max_followed_traders: 12
-  signatures_per_trader: 3000
-  skill_window_days: 90
-  # Leaderboard services polled at most this often (900s keeps the
-  # Solana Tracker free tier at ~2.9k of its 10k monthly requests).
-  leaderboard_interval_sec: 900
-  # A passing candidate replaces the weakest followed trader only when
-  # its score beats the incumbent's by this margin (anti-churn).
-  replace_margin: 0.02
-follow:
-  poll_interval_sec: 5
-  price_mark_interval_sec: 20
+  max_live_wallets_per_token: 2
+
 paper:
   wallet_count: 3
   starting_sol: 10.0

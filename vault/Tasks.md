@@ -3,6 +3,116 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — master config + trading profiles (2026-08-18)
+
+- [x] **Operator-requested restructure:** one MASTER file plus one file
+      per trading style, so switching strategy is a one-line edit and
+      never a code change.
+      - `backend/config.yaml` (master, gitignored — holds secrets):
+        `dev_mode`, `hft`, server, chain, **risk exposure**, paper.
+        Risk lives here deliberately: changing strategy must never
+        silently change how much money a trade may touch.
+      - `backend/config.hft.yaml` / `config.slow.yaml` (TRACKED, no
+        secrets — shareable presets): `filters`, `discovery`, `follow`.
+      - `hft: true|false` selects the profile at BOOT (like dev_mode;
+        it reshapes the discovery pipeline, so changing it needs a
+        restart).
+- [x] `_save()` splits the write the same way as the read, so REST
+      config updates preserve the structure: `risk` → master,
+      `filters`/`discovery`/`follow` → the ACTIVE profile file (the
+      inactive one is never touched). Pinned by test.
+- [x] **The old trap is designed out.** A previous session's
+      `config.dev.yaml` + `OLALA_CONFIG` design was reverted because
+      "the flag never being in the running config" hid dev mode from
+      the UI. Here the flags live in the always-read master, the active
+      profile name rides in the WebSocket snapshot (`profile`), the
+      boot log names it, and the UI shows an HFT badge. The running
+      config cannot silently disagree with the operator's file.
+- [x] Legacy single-file configs still load (master's profile sections
+      are applied first, profile file overrides them), so nothing
+      breaks mid-migration. 216 tests green (8 new, incl. a test that
+      loads the two REAL shipped profiles).
+- [x] Slow profile designed as the true counterpart, not a copy: 30d
+      history and skill window, 40 trades/day cap, 30-min minimum hold,
+      win-rate ranking (bag adjustment actually bites at 30d), 8 seats,
+      3 leaderboard pages. Ledger ~943k/month.
+
+## Done — HIGH-FREQUENCY PIVOT (operator decision, 2026-08-18)
+
+- [x] **Operator doctrine change:** copy high-frequency traders (up to
+      ~500 trades/day). Distorted service win rates accepted; judgment
+      = net realized PnL + SHARP over a 7-DAY window (a ~3,500-trade
+      sample for a 500/day wallet), with 30-day PERSISTENCE enforced
+      free via `leaderboard_min_active_days`. Decisions from
+      consultation: Helius free tier, 7d window, 5 seats, leaderboard
+      sorted by realized PnL.
+- [x] Config rebalance to fit ~1M credits/month (verified by script:
+      0.99M): discovery 75 calls/300s (0.65M), follow safety poll 5×90s
+      (0.14M), copy fetches ~0.15M, screens ~0.04M. Filters:
+      history 7d, max_trades_per_day 600 (pre-screen ceiling 3,000
+      sigs/day), hold-time gate off, inactive 24h,
+      signatures_per_trader 12,000, winners_per_scan 3, tracker poll
+      450s (~5.8k of 10k tier).
+- [x] Code: `discovery.leaderboard_sort` (win_percentage|realized|
+      trades, validated at load; ConfigStore.update made transactional
+      so a rejected patch cannot leave a half-mutated config);
+      deep-scan queue ranks by leaderboard POSITION; scanner
+      SIGNATURE_BATCH 50→500 (listing ~10× cheaper); follower
+      SIGNATURES_PER_POLL 15→30, MAX_TX_FETCHES_PER_TRADER 5→10
+      (burst headroom ~20 sigs/s). 204 tests green.
+- [x] **Pagination shipped (2026-08-18, follow-up):** the client walks
+      up to `discovery.leaderboard_pages` (10) cursor pages per poll,
+      keeping only copyable-cadence wallets, until 100 keepers are
+      found. Poll hourly = 7.2k of the 10k tracker tier. Live verified:
+      100 copyable nominees per poll, top entries $0.8M–$4.6M realized
+      PnL/30d at 13–450 trades/day. Partial page failures return what
+      was collected; only a first-page failure raises (falls through).
+- [x] **Two truths pinned by live probes:** (1) the API silently
+      IGNORES unknown params — `maxTrades=500` left 99/100 rows over
+      500, so server-side maximum filtering does not exist and
+      client-side capping stands; (2) `minDays` cannot exceed the
+      board window (`days=7, minDays=30` correctly returns total=0) —
+      nomination therefore moved to the 30-DAY board (persistence
+      lives there) while our deep scan still judges the last 7 days.
+      The client widens the board automatically when
+      `min_active_days > window`.
+- [ ] **Latency caveat (recorded, unresolved by design):** copies land
+      ~2-5s after the trader; an HF wallet's speed edge may not
+      transfer. Judge the COPIES' paper PnL over days, not the
+      trader's stats. Live HF copying is impossible on free tier
+      (confirm-polling alone) and needs a fee budget — paid-tier
+      decision for later.
+
+## Done — nomination quality + census de-emphasis (2026-08-18)
+
+- [x] **Measured finding that reframed the problem:** the operator
+      believed the leaderboard was serving high-frequency bots. Live
+      probe says otherwise — 85/100 of the top-100 are at human cadence,
+      and 7/8 sampled pass our pre-screen with 1–11 signatures/day. The
+      bots come from the **DEX census**, which by construction samples
+      bot-dominated live flow (matches the MVP-era measurement in the
+      superseded section below).
+- [x] **The API has NO maximum-activity filter** — every server-side
+      filter is a minimum (minTrades/minDays/minInvested/minWinRate/
+      minRoi/minClosedTokens) plus maxSingleTokenPct + excludeArbitrage.
+      So the cap is applied client-side: `trades_per_day` is derived
+      from `counts.trades / period.tradingDays` and wallets above
+      `filters.max_trades_per_day` are dropped BEFORE any RPC is spent
+      (counted as `bots_blocked`). A missing rate never reads as a bot.
+- [x] **Our floors pushed to the service:** `minTrades` from
+      `filters.min_trades` and `minDays` from the new
+      `discovery.leaderboard_min_active_days` (30; the service default
+      of 3 nominated week-old wallets that could never clear the history
+      gate). Measured effect on the live API: median nominee went from
+      74 → 240 trades, wallets under 50 trades 36 → 9, and 90 of 100
+      nominees were replaced.
+- [x] **Census de-emphasized** (operator config): `census_tx_sample`
+      16→8 (frees ~24 RPC calls/sweep for deep scans),
+      `census_min_sightings` 2→3.
+- [x] **`stale_bag_days` 3.0 → 7.0** — at 3 days a normal swing trade
+      scored as a realized loss, which was suppressing nearly every
+      admission. 200 tests green (4 new).
+
 ## Done — Birdeye removed (2026-08-18)
 
 - [x] Operator decision: Solana Tracker is the only leaderboard service.

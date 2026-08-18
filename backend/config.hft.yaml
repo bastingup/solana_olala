@@ -1,0 +1,77 @@
+# =====================================================================
+# HIGH-FREQUENCY PROFILE — active when `hft: true` in config.yaml.
+#
+# Chases traders doing up to ~500 trades/day. Judgment is net realized
+# PnL + SHARP over a SHORT window (a 7-day window is already a ~3,500
+# trade sample for such a wallet); persistence is enforced separately by
+# requiring 30 active trading days on the nomination board.
+#
+# RPC ledger, ~1M Helius credits/month: discovery 648k + follow poll
+# 144k + copy fetches 150k + safety screens 45k = ~987k.
+# =====================================================================
+
+filters:
+  # The 7d window is the JUDGE. 30-day persistence is enforced free via
+  # discovery.leaderboard_min_active_days below.
+  min_history_days: 7
+  min_trades: 20
+  # Closed round trips before a win rate means anything.
+  min_round_trips: 10
+  # BAG-ADJUSTED win rate. NOTE: at a 7d window with 7d staleness the
+  # bag adjustment barely bites — judgment leans on the hard
+  # net-realized-PnL gate and SHARP (operator accepted this trade-off).
+  min_win_rate: 0.55
+  min_sharpe: 0.02
+  stale_bag_days: 7.0
+  # A high-frequency wallet silent for a day is dead.
+  max_inactive_hours: 24
+  # Admits ~500 trades/day (600 leaves headroom). The pre-screen bot
+  # ceiling scales with this (x5 = 3,000 signatures/day), so the
+  # 23,000-signatures/day monsters are still blocked at the door.
+  max_trades_per_day: 600.0
+  # Never reject on hold time: fast styles are the point here. Whether
+  # their edge SURVIVES our ~2-5s copy latency is measured in paper.
+  min_median_hold_minutes: 0.0
+  min_token_market_cap_usd: 500000.0
+  min_token_liquidity_usd: 50000.0
+  max_token_market_cap_usd: 50000000000.0
+
+discovery:
+  # Sustainable free-tier pace: 75 calls per 5-minute sweep ~= 648k
+  # credits/month. An HF candidate (~7-10k transaction fetches) reaches
+  # a verdict in roughly 8-12 hours at this pace.
+  scan_interval_sec: 300
+  rpc_calls_per_scan: 75
+  # Live DEX flow is dominated by high-frequency bots, so the census
+  # stays a cheap backstop with a high sighting bar.
+  census_tx_sample: 8
+  census_min_sightings: 3
+  # Nomination happens on the 30-DAY board (a 7-day board cannot demand
+  # 30 active days — the server returns an empty set for that); our own
+  # deep scan still judges the last 7 days.
+  leaderboard_min_active_days: 30
+  # Operator doctrine: PnL over win-rate optics.
+  leaderboard_sort: realized
+  # Walk up to 10 pages (top ~1000 wallets) per poll, keeping only
+  # copyable-cadence wallets — the board's top is mostly ultra-HF
+  # machines above our ceiling, so depth is what buys usable names.
+  leaderboard_pages: 10
+  # 10 pages/hour = ~7.2k of the 10k/month Solana Tracker tier.
+  leaderboard_interval_sec: 3600
+  # Winners' holders finds token-pickers, not HF traders — keep it small
+  # so it cannot eat the sweep budget.
+  winners_per_scan: 3
+  max_candidates_per_scan: 10000
+  # Few seats = more RPC headroom per trader and faster roster upgrades.
+  max_followed_traders: 5
+  # Deep enough for ~7.7 days of a ~1,500 signatures/day wallet.
+  signatures_per_trader: 12000
+  skill_window_days: 7
+  replace_margin: 0.02
+
+follow:
+  # Push (logsSubscribe) delivers copies in ~2s; this interval poll is
+  # only the safety net. At 5 traders / 90s it costs ~144k credits/month
+  # and leaves the RPC lane clear for actual trade copying.
+  poll_interval_sec: 90
+  price_mark_interval_sec: 20

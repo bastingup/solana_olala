@@ -41,6 +41,14 @@ export function renderCommand(state, totals) {
     badge.textContent = "DEV";
     badge.title = "Dev mode: relaxed gates for testing. "
       + "Arming live wallets is locked out.";
+  } else if (state.profile === "hft") {
+    // The high-frequency profile chases fast traders whose edge may not
+    // survive copy latency — worth stating, not hiding.
+    badge.hidden = false;
+    badge.dataset.mode = "hft";
+    badge.textContent = "HFT";
+    badge.title = "High-frequency profile (config.hft.yaml): fast "
+      + "traders, 7-day judgment window.";
   } else {
     badge.hidden = true;
   }

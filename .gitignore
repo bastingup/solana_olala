@@ -8,7 +8,10 @@ __pycache__/
 .env.*
 *.env
 
-# Runtime state — never commit balances, keys, or local config drift
+# Runtime state — never commit balances, keys, or local config drift.
+# NOTE: only the MASTER config is ignored (it holds API keys). The
+# trading profiles config.hft.yaml / config.slow.yaml carry no secrets
+# and stay tracked, so the presets are versioned and shareable.
 backend/olala.db
 backend/keystore.enc
 backend/config.yaml

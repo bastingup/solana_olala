@@ -124,17 +124,17 @@ def test_burst_larger_than_budget_carries_over(follow_world):
     provider.signatures[TRADER] = [entry("s0")]
     daemon.tick()  # arm cursor
 
-    names = [f"s{i}" for i in range(8, 0, -1)]  # s8 newest … s1 oldest
+    names = [f"s{i:02d}" for i in range(14, 0, -1)]  # s14 newest … s01
     provider.signatures[TRADER] = [entry(n) for n in names] + [entry("s0")]
     for n in names:
         swap_for(provider, n)
     daemon.tick()
-    # Budget is 5: the OLDEST five processed first, none skipped.
+    # Budget is 10: the OLDEST ten processed first, none skipped.
     assert [s.observed.signature for s in engine.signals] == [
-        "s1", "s2", "s3", "s4", "s5"]
+        f"s{i:02d}" for i in range(1, 11)]
     daemon.tick()
     assert [s.observed.signature for s in engine.signals] == [
-        "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+        f"s{i:02d}" for i in range(1, 15)]
 
 
 def test_rpc_failure_mid_poll_never_duplicates(follow_world):

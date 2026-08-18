@@ -1,0 +1,60 @@
+# =====================================================================
+# SLOW / SWING PROFILE — active when `hft: false` in config.yaml.
+#
+# Chases patient traders: real month-plus track records, human cadence,
+# positions held long enough that our ~2-5s copy latency is irrelevant.
+# Judgment leans on the BAG-ADJUSTED win rate, which actually bites here
+# because the 30-day window is wide enough for stale bags to show.
+#
+# RPC ledger, ~1M Helius credits/month: discovery 648k + follow poll
+# 230k + copy fetches 20k + safety screens 45k = ~943k.
+# =====================================================================
+
+filters:
+  # A real track record, not a hot streak.
+  min_history_days: 30
+  min_trades: 20
+  min_round_trips: 10
+  # BAG-ADJUSTED win rate — meaningful at this window: every unsold bag
+  # older than stale_bag_days counts as a realized loss, so the
+  # "never sell the losers" wallet collapses here.
+  min_win_rate: 0.55
+  min_sharpe: 0.05
+  stale_bag_days: 10.0
+  # A swing trader may reasonably be quiet over a long weekend.
+  max_inactive_hours: 96
+  # Human cadence only: anything faster is a bot or uncopyable.
+  max_trades_per_day: 40.0
+  # Positions must be held long enough that copy latency is noise.
+  min_median_hold_minutes: 30.0
+  min_token_market_cap_usd: 500000.0
+  min_token_liquidity_usd: 50000.0
+  max_token_market_cap_usd: 50000000000.0
+
+discovery:
+  scan_interval_sec: 300
+  rpc_calls_per_scan: 75
+  census_tx_sample: 8
+  census_min_sightings: 3
+  # Board window and persistence floor agree here, so no widening.
+  leaderboard_min_active_days: 30
+  # Win rate is the honest ranking at this window: bags are counted, so
+  # a high win rate cannot be faked by refusing to sell losers.
+  leaderboard_sort: win_percentage
+  # Non-HFT wallets are plentiful near the top of a win-rate board, so
+  # a couple of pages is enough to fill a nominee set.
+  leaderboard_pages: 3
+  # 3 pages/hour = ~2.2k of the 10k/month Solana Tracker tier.
+  leaderboard_interval_sec: 3600
+  # Winners' holders earns its keep here: it finds patient token-pickers.
+  winners_per_scan: 4
+  max_candidates_per_scan: 10000
+  # Low-volume traders cost little to follow, so more seats fit.
+  max_followed_traders: 8
+  signatures_per_trader: 3000
+  skill_window_days: 30
+  replace_margin: 0.02
+
+follow:
+  poll_interval_sec: 90
+  price_mark_interval_sec: 20
