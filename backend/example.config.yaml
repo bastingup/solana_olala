@@ -7,13 +7,11 @@ chain:
   - https://api.mainnet-beta.solana.com
   - https://solana-rpc.publicnode.com
   helius_api_key:
-  # Optional PnL leaderboard feeders. Leave empty to run purely on-chain
+  # Optional PnL leaderboard feeder. Leave empty to run purely on-chain
   # (census + winners' holders); any failure or rate limit falls through
   # to on-chain automatically.
   # Free key: https://www.solanatracker.io/data-api (10k requests/month)
   solana_tracker_api_key:
-  # Free key: https://bds.birdeye.so (30k CU/month, secondary source)
-  birdeye_api_key:
   requests_per_second: 2.0
   request_timeout_sec: 15.0
 filters:

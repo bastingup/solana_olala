@@ -65,22 +65,6 @@ class FakeProvider:
         return self.signature_status.get(signature)
 
 
-class FakeBirdeye:
-    """BirdeyeClient replacement: scripted leaderboard, optional failure."""
-
-    def __init__(self, traders=None, fail=False):
-        self.traders = traders or []
-        self.fail = fail
-        self.calls = 0
-
-    def top_traders(self, window="1W", limit=10):
-        self.calls += 1
-        if self.fail:
-            from olala.chain.birdeye import BirdeyeError
-            raise BirdeyeError("scripted failure")
-        return self.traders[:limit]
-
-
 class FakeTracker:
     """SolanaTrackerClient replacement: scripted leaderboard, optional
     failure (covers missing entitlement, rate limit, outage alike)."""

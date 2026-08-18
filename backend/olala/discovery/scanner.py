@@ -16,8 +16,9 @@ the pre-run window costs tens of thousands of signatures on any trending
 pool). The holder read costs 3 RPC calls per winner and every result is,
 by construction, a wallet that entered a winner early with real size.
 
-(When a Birdeye API key is configured, its top-PnL leaderboard is used as
-an additional primary source; without one the system is on-chain only.)
+(When a Solana Tracker API key is configured, its PnL leaderboard is used
+as an additional nomination source; without one the system is on-chain
+only.)
 
 Every candidate passes a cheap pre-screen before any deep work: one
 signature-history call sized to the trade-count requirement answers both
@@ -87,7 +88,7 @@ class TraderDiscoveryDaemon(Daemon):
                  market_data: MarketDataService, registry: TraderRegistry,
                  db: Database, bus: EventBus,
                  assign_wallet: Callable[[], str],
-                 birdeye=None, jupiter=None, tracker=None) -> None:
+                 jupiter=None, tracker=None) -> None:
         super().__init__("discovery",
                          store.config.discovery.scan_interval_sec)
         self._store = store
@@ -97,11 +98,10 @@ class TraderDiscoveryDaemon(Daemon):
         self._db = db
         self._bus = bus
         self._assign_wallet = assign_wallet
-        self._birdeye = birdeye
         self._jupiter = jupiter
         self._tracker = tracker
-        # Leaderboard services are optional accelerators on free tiers:
-        # polled at most every leaderboard_interval_sec, and marked
+        # The leaderboard service is an optional accelerator on a free
+        # tier: polled at most every leaderboard_interval_sec, and marked
         # attempted even on failure so a rate-limited service is not
         # hammered every sweep.
         self._last_leaderboard_at = 0.0
@@ -141,7 +141,6 @@ class TraderDiscoveryDaemon(Daemon):
             "phase": phase,
             "detail": detail,
             "source": ("Solana Tracker PnL" if self._tracker
-                       else "Birdeye leaderboard" if self._birdeye
                        else "Winners' holders"),
             "counters": dict(self._counters),
             "candidates": len(
@@ -207,37 +206,29 @@ class TraderDiscoveryDaemon(Daemon):
     def _harvest_candidates(self, config, budget: RpcBudget) -> None:
         """The census is the primary enumerator: it nominates wallets that
         provably trade, and judgment is only ever our computed win rate.
-        PnL leaderboard services (Solana Tracker, then Birdeye — each
-        optional, keyed, and throttled to its free tier) accelerate the
-        hunt when available; winners' holders is the on-chain feeder that
-        needs nothing but RPC. Every service failure falls through — a
-        missing key, a rate limit, or an outage costs breadth, never the
-        sweep."""
+        The Solana Tracker PnL leaderboard (optional, keyed, throttled to
+        its free tier) accelerates the hunt when available; winners'
+        holders is the on-chain feeder that needs nothing but RPC. Every
+        service failure falls through — a missing key, a rate limit, or
+        an outage costs breadth, never the sweep."""
         import time
         self._census_flow(config, budget)
         if not budget.exhausted and self._leaderboard_due(config):
             # Mark the attempt regardless of outcome: a rate-limited
             # service must not be retried every sweep.
             self._last_leaderboard_at = time.time()
-            for name, client, harvest in (
-                    ("Solana Tracker", self._tracker,
-                     self._harvest_from_tracker),
-                    ("Birdeye", self._birdeye,
-                     self._harvest_from_leaderboard)):
-                if client is None:
-                    continue
-                try:
-                    harvest(config, budget)
-                    return
-                except Exception as exc:
-                    logger.warning("%s leaderboard unavailable (%s) — "
-                                   "falling through", name, exc)
+            try:
+                self._harvest_from_tracker(config, budget)
+                return
+            except Exception as exc:
+                logger.warning("Solana Tracker leaderboard unavailable "
+                               "(%s) — falling through", exc)
         if not budget.exhausted:
             self._harvest_from_winners(config, budget)
 
     def _leaderboard_due(self, config) -> bool:
         import time
-        if self._tracker is None and self._birdeye is None:
+        if self._tracker is None:
             return False
         return (time.time() - self._last_leaderboard_at
                 >= config.discovery.leaderboard_interval_sec)
@@ -317,25 +308,6 @@ class TraderDiscoveryDaemon(Daemon):
         if promoted:
             self._bus.publish("discovery_scan", {
                 "source": "DEX census", "new_candidates": promoted})
-
-    def _harvest_from_leaderboard(self, config, budget: RpcBudget) -> None:
-        traders = self._birdeye.top_traders(
-            window=config.discovery.gainers_window,
-            limit=config.discovery.gainers_limit)
-        found = 0
-        for entry in traders:
-            address = entry["address"]
-            if self._registry.get(address) is not None:
-                continue
-            if not self._pre_screen(config, address, budget):
-                continue
-            if self._registry.add_candidate(address):
-                found += 1
-                logger.info("leaderboard candidate %s… (reported pnl %s)",
-                            address[:8], entry.get("pnl"))
-        if found:
-            self._bus.publish("discovery_scan", {
-                "source": "Birdeye leaderboard", "new_candidates": found})
 
     # -- winners' holders --------------------------------------------------
 

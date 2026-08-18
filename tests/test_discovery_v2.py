@@ -10,8 +10,8 @@ from olala.domain.models import ObservedTrade, TraderStatus, TradeSide
 from olala.services.traders import TraderRegistry
 
 from conftest import make_token
-from fakes import (FakeBirdeye, FakeJupiterTokens, FakeMarketData,
-                   FakeProvider, make_swap_tx)
+from fakes import (FakeJupiterTokens, FakeMarketData, FakeProvider,
+                   FakeTracker, make_swap_tx)
 
 ELITE = "EliteTraderAAAA11111111111111111111111111111"
 BOT = "BotWalletBBBB1111111111111111111111111111111"
@@ -50,14 +50,13 @@ def big_swap(trader):
     return make_swap_tx(trader, -2_000_005_000, "MintX111", 100.0)
 
 
-def make_daemon(db, bus, config_store, provider=None, birdeye=None,
-                jupiter=None, market=None, tracker=None):
+def make_daemon(db, bus, config_store, provider=None, jupiter=None,
+                market=None, tracker=None):
     provider = provider or FakeProvider()
     registry = TraderRegistry(db, bus)
     daemon = TraderDiscoveryDaemon(
         config_store, provider, market or FakeMarketData(), registry, db,
-        bus, assign_wallet=lambda: "w1", birdeye=birdeye, jupiter=jupiter,
-        tracker=tracker)
+        bus, assign_wallet=lambda: "w1", jupiter=jupiter, tracker=tracker)
     return provider, registry, daemon
 
 
@@ -78,21 +77,21 @@ def stage_winner_holders(provider, holders, supply=1_000_000.0):
 
 
 def test_leaderboard_candidates_admitted_to_review(db, bus, config_store):
-    birdeye = FakeBirdeye(traders=[{"address": ELITE, "pnl": 1234.5}])
+    tracker = FakeTracker(traders=[{"address": ELITE, "win_rate": 0.7}])
     provider, registry, daemon = make_daemon(db, bus, config_store,
-                                             birdeye=birdeye)
+                                             tracker=tracker)
     provider.signatures[ELITE] = human_signatures()
     daemon._harvest_candidates(config_store.config, RpcBudget(30))
     profile = registry.get(ELITE)
     assert profile is not None
     assert profile.status is TraderStatus.CANDIDATE
-    assert birdeye.calls == 1
+    assert tracker.calls == 1
 
 
 def test_pre_screen_rejects_machine_frequency_wallet(db, bus, config_store):
-    birdeye = FakeBirdeye(traders=[{"address": BOT, "pnl": 99999.0}])
+    tracker = FakeTracker(traders=[{"address": BOT, "win_rate": 0.99}])
     provider, registry, daemon = make_daemon(db, bus, config_store,
-                                             birdeye=birdeye)
+                                             tracker=tracker)
     provider.signatures[BOT] = bot_signatures()
     daemon._harvest_candidates(config_store.config, RpcBudget(30))
     profile = registry.get(BOT)
@@ -241,9 +240,9 @@ def test_status_is_retained_for_late_connecting_clients(db, bus,
 
 
 def test_bot_block_increments_counter(db, bus, config_store):
-    birdeye = FakeBirdeye(traders=[{"address": BOT, "pnl": 1.0}])
+    tracker = FakeTracker(traders=[{"address": BOT, "win_rate": 0.5}])
     provider, registry, daemon = make_daemon(db, bus, config_store,
-                                             birdeye=birdeye)
+                                             tracker=tracker)
     provider.signatures[BOT] = bot_signatures()
     daemon._harvest_candidates(config_store.config, RpcBudget(30))
     assert daemon._counters["bots_blocked"] == 1

@@ -14,7 +14,6 @@ from flask import Flask, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 from flask_sock import Sock
 
-from ..chain.birdeye import BirdeyeClient
 from ..chain.jupiter import JupiterClient
 from ..chain.market_data import MarketDataService
 from ..chain.provider import build_provider
@@ -74,14 +73,12 @@ class AppContext:
                 on_receipt=self.record_receipt))
         follower = FollowDaemon(self.store, self.provider, self.registry,
                                 self.engine)
-        birdeye = (BirdeyeClient(config.chain.birdeye_api_key)
-                   if config.chain.birdeye_api_key else None)
         tracker = (SolanaTrackerClient(config.chain.solana_tracker_api_key)
                    if config.chain.solana_tracker_api_key else None)
         self.discovery = TraderDiscoveryDaemon(
             self.store, self.provider, self.market_data, self.registry,
             self.db, self.bus, assign_wallet=self.assign_wallet,
-            birdeye=birdeye, jupiter=jupiter, tracker=tracker)
+            jupiter=jupiter, tracker=tracker)
         self.daemons = [
             self.discovery,
             follower,
@@ -123,7 +120,6 @@ class AppContext:
         config = self.store.config.to_dict()
         chain = config.get("chain", {})
         chain["helius_enabled"] = bool(chain.pop("helius_api_key", ""))
-        chain["birdeye_enabled"] = bool(chain.pop("birdeye_api_key", ""))
         chain["solana_tracker_enabled"] = bool(
             chain.pop("solana_tracker_api_key", ""))
         return config

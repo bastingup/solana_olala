@@ -3,6 +3,16 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — Birdeye removed (2026-08-18)
+
+- [x] Operator decision: Solana Tracker is the only leaderboard service.
+      Deleted `chain/birdeye.py`, the `chain.birdeye_api_key` and
+      `discovery.gainers_window`/`gainers_limit` config fields, the
+      scanner's secondary-source hop, and `birdeye_enabled` from the
+      public config. Fall-through is now tracker → winners' holders
+      (census always runs); all pins ported to FakeTracker. 197 tests
+      green. Do not reintroduce without an operator decision.
+
 ## Done — reassignment liquidates copied positions (2026-08-17)
 
 - [x] **Operator-reported bug:** after dragging a trader moon onto a new

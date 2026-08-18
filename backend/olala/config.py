@@ -31,7 +31,6 @@ class ChainConfig:
         "https://solana-rpc.publicnode.com",
     ])
     helius_api_key: str = ""
-    birdeye_api_key: str = ""
     # Solana Tracker Data API (free tier: 10k requests/month). Feeds the
     # PnL leaderboard as a candidate source; empty key just means the
     # scanner relies on the on-chain census and winners' holders alone.
@@ -105,10 +104,7 @@ class DiscoveryConfig:
     ])
     census_tx_sample: int = 8
     census_min_sightings: int = 2
-    # Birdeye leaderboard window for the primary candidate source.
-    gainers_window: str = "1W"
-    gainers_limit: int = 10
-    # Leaderboard services are polled at most this often (seconds) so a
+    # The leaderboard service is polled at most this often (seconds) so a
     # free API tier lasts the month; between polls the on-chain sources
     # carry the sweep. 900s ≈ 2.9k requests/month.
     leaderboard_interval_sec: int = 900

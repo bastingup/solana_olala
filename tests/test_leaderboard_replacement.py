@@ -1,5 +1,5 @@
-"""Leaderboard sourcing (Solana Tracker → Birdeye → on-chain fall-through)
-and automatic replacement of the weakest followed trader."""
+"""Leaderboard sourcing (Solana Tracker → on-chain fall-through) and
+automatic replacement of the weakest followed trader."""
 
 import time
 
@@ -8,7 +8,7 @@ from olala.discovery.scanner import RpcBudget
 from olala.domain.models import (ObservedTrade, TraderProfile, TraderStatus,
                                  TradeSide)
 
-from fakes import FakeBirdeye, FakeMarketData, FakeProvider, FakeTracker
+from fakes import FakeMarketData, FakeProvider, FakeTracker
 from test_discovery_v2 import make_daemon
 
 NOMINEE = "NomineeAAAA111111111111111111111111111111111"
@@ -48,21 +48,7 @@ def test_tracker_nominates_candidates(tmp_path, db, bus):
     assert scans and "Solana Tracker" in scans[0]["data"]["source"]
 
 
-def test_tracker_failure_falls_through_to_birdeye(tmp_path, db, bus):
-    store = dev_store(tmp_path)
-    tracker = FakeTracker(fail=True)
-    birdeye = FakeBirdeye(traders=[{"address": NOMINEE, "pnl": 5.0}])
-    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker,
-                                      birdeye=birdeye)
-
-    daemon._harvest_candidates(store.config, budget_for(store))
-
-    assert tracker.calls == 1
-    assert birdeye.calls == 1
-    assert registry.get(NOMINEE) is not None
-
-
-def test_all_services_failing_falls_through_to_winners(tmp_path, db, bus):
+def test_tracker_failure_falls_through_to_winners(tmp_path, db, bus):
     class RecordingMarket(FakeMarketData):
         def __init__(self):
             super().__init__()
@@ -76,11 +62,11 @@ def test_all_services_failing_falls_through_to_winners(tmp_path, db, bus):
     store = dev_store(tmp_path)
     market = RecordingMarket()
     _, _, daemon = make_daemon(db, bus, store, tracker=FakeTracker(fail=True),
-                               birdeye=FakeBirdeye(fail=True), market=market)
+                               market=market)
 
     daemon._harvest_candidates(store.config, budget_for(store))
 
-    # Both services blew up (rate limit, outage — same path) and the sweep
+    # The service blew up (rate limit, outage — same path) and the sweep
     # still reached the on-chain winners' holders source.
     assert market.winner_searches == 1
 
@@ -208,3 +194,44 @@ def test_full_roster_keeps_sweeping(tmp_path, db, bus):
     assert daemon.last_status["phase"] != "roster_full"
     assert "hunting" in daemon.last_status.get("detail", "").lower() \
         or daemon.last_status["phase"] == "sweep_done"
+
+
+def test_keyless_hunt_is_ongoing_every_tick(db, bus, config_store):
+    """No API keys, dev mode off, roster full: every single tick must
+    still run the on-chain census AND the winners' hunt — discovery is
+    never one-shot and never idle."""
+    class CountingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.signature_reads = 0
+
+        def get_signatures(self, address, limit=100, before=None):
+            self.signature_reads += 1
+            return super().get_signatures(address, limit, before)
+
+    class RecordingMarket(FakeMarketData):
+        def __init__(self):
+            super().__init__()
+            self.winner_searches = 0
+
+        def search_winners(self, min_liquidity_usd, min_change_pct,
+                           limit=8):
+            self.winner_searches += 1
+            return []
+
+    provider = CountingProvider()
+    market = RecordingMarket()
+    provider_, registry, daemon = make_daemon(
+        db, bus, config_store, provider=provider, market=market)
+    full_roster(registry, config_store.config.discovery.max_followed_traders,
+                0.9)
+
+    daemon.tick()
+    after_first = (provider.signature_reads, market.winner_searches)
+    daemon.tick()
+    after_second = (provider.signature_reads, market.winner_searches)
+
+    assert after_first[0] > 0 and after_first[1] == 1
+    # The second sweep hunts again — nothing throttles the on-chain path.
+    assert after_second[0] > after_first[0]
+    assert after_second[1] == 2
