@@ -108,8 +108,127 @@ function updateScanBanner(state) {
       : "sweeping…";
   }
 
+  updateTrackBar(state);
   updateTrackingLine(state);
   updateSourceStrip(state);
+}
+
+// How long until every followed wallet has fresh data, and whether the
+// last pull worked. The backend reports a coverage WINDOW rather than a
+// countdown so this can interpolate smoothly between the 1s status
+// messages, and so both gears answer the same question the same way.
+function updateTrackBar(state) {
+  const bar = document.getElementById("track-bar");
+  const t = state.tracking;
+  if (!t || !t.roster || !t.coverage_complete_at) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+
+  const now = Date.now() / 1000;
+  const start = t.coverage_started_at;
+  const end = t.coverage_complete_at;
+  const remaining = Math.max(end - now, 0);
+
+  // Round-robin fills by POSITION, not by elapsed time. Ticks can run
+  // late, and a clock-driven bar would then claim wallets had been
+  // refreshed when they had not — the one thing this bar exists to be
+  // honest about. A batch sweep refreshes everyone at once, so there is
+  // no position to report and time is all there is.
+  const done = t.gear === "round_robin"
+    ? clamp01(t.pass_position / Math.max(t.roster, 1))
+    : clamp01((now - start) / Math.max(end - start, 0.001));
+
+  // Past the window with no new one opened, the pull is in flight or
+  // late — either way the honest thing is to stop implying progress.
+  const polling = remaining <= 0;
+
+  const fill = document.getElementById("track-bar-fill");
+  setFill(fill, done * 100);
+
+  const rail = fill.parentElement;
+  rail.setAttribute("aria-valuenow", Math.round(done * 100));
+
+  const label = document.getElementById("track-bar-label");
+  if (t.gear === "round_robin") {
+    // One wallet per tick: say which wallet of how many, because "next
+    // pull in 1s" is true but useless — what matters is when the whole
+    // roster has been seen.
+    label.innerHTML = `Refreshing wallets <b>${t.pass_position}</b>/`
+      + `<b>${t.roster}</b> — all seen in `
+      + `<b>${formatCountdown(remaining)}</b>`;
+  } else {
+    label.innerHTML = `Next pull of all <b>${t.roster}</b> wallets in `
+      + `<b>${formatCountdown(remaining)}</b>`;
+  }
+
+  const status = document.getElementById("track-bar-status");
+  const outcome = pollOutcome(t, polling);
+  status.dataset.state = outcome.state;
+  status.textContent = outcome.text;
+  status.title = outcome.title;
+  bar.dataset.state = outcome.state;
+}
+
+function pollOutcome(t, polling) {
+  if (!t.last_poll_at) {
+    return { state: "waiting", text: "waiting for first pull",
+             title: "The tracker has not completed a pull yet." };
+  }
+  const detail = t.last_poll_detail || "";
+  const age = Math.max(Date.now() / 1000 - t.last_poll_at, 0);
+  const when = `${timeAgo(t.last_poll_at)} ago`;
+  if (polling && t.last_poll_ok) {
+    return { state: "polling", text: "pulling…",
+             title: `Last pull ${when}: ${detail}` };
+  }
+  if (!t.last_poll_ok) {
+    // Partial: some wallets answered, some did not. Calling that "ok"
+    // would hide exactly the wallets that are going stale.
+    const partial = /\d+\/\d+ wallets refreshed/.test(detail)
+      && !detail.startsWith("0/");
+    return {
+      state: partial ? "partial" : "failed",
+      text: partial ? `partial — ${detail}` : "last pull FAILED",
+      title: `${detail || "no detail"} (${when})`,
+    };
+  }
+  return {
+    state: "ok",
+    text: `last pull ok · ${when}`,
+    title: `${detail} — ${t.polls_ok} successful, ${t.polls_failed} failed`
+      + (age > 30 ? " — this is unusually stale" : ""),
+  };
+}
+
+// Forward motion glides; the reset at the end of a pass SNAPS. Easing
+// the bar backwards reads as progress being undone, when what actually
+// happened is that a new pass began at zero.
+function setFill(fill, percent) {
+  const previous = Number(fill.dataset.pct || 0);
+  const scale = (percent / 100).toFixed(4);
+  if (percent < previous) {
+    fill.style.transition = "none";
+    fill.style.transform = `scaleX(${scale})`;
+    void fill.offsetWidth;            // commit before easing returns
+    fill.style.transition = "";
+  } else {
+    fill.style.transform = `scaleX(${scale})`;
+  }
+  fill.dataset.pct = String(percent);
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function formatCountdown(seconds) {
+  if (seconds >= 60) {
+    return `${Math.floor(seconds / 60)}m `
+      + `${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
+  }
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
 }
 
 // Tracking is the half of the system that decides whether a copy
@@ -139,9 +258,16 @@ function updateTrackingLine(state) {
     `<span>copied <b>${t.signals_emitted}</b></span>`,
   ];
   if (!t.stream_proven) {
-    parts.push('<span class="warn" title="logsSubscribe fails silently on '
-      + 'public RPC, so the sweep stays on the expensive gear until the '
-      + 'stream proves it is delivering.">stream unproven</span>');
+    parts.push('<span class="warn" title="The push stream has not proven '
+      + 'it delivers, so the sweep stays on the batch gear. A quiet '
+      + 'market is not the cause — the stream is judged by trades it '
+      + 'fails to deliver, never by silence.">stream unproven</span>');
+  }
+  if (t.stream_misses) {
+    parts.push(`<span class="warn" title="Trades the poll caught that the `
+      + `push stream never reported. Each one drops tracking back to the `
+      + `batch sweep until the stream delivers again.">`
+      + `stream missed <b>${t.stream_misses}</b></span>`);
   }
   if (t.stale_entries_blocked) {
     parts.push(`<span class="warn" title="Entries older than the staleness `
@@ -162,8 +288,19 @@ function updateTrackingLine(state) {
   el.innerHTML = parts.join("");
 }
 
-// One chip per RPC source. A silent fall-through is not something an
-// operator should have to infer from a latency graph.
+// One chip per RPC source, saying which is carrying the load and which
+// are standing by ready to take it. A silent fall-through is not
+// something an operator should have to infer from a latency graph, and a
+// standby endpoint of unknown health is not a fall-through you can
+// trust — so idle sources are health-probed rather than left grey.
+const SOURCE_STATE_NOTE = {
+  active: "Serving traffic right now.",
+  ready: "Answered its health check — standing by to take over.",
+  down: "Not answering. Traffic routes past it.",
+  unknown: "Not contacted yet, so nothing is claimed either way.",
+  off: "Configured but disabled — usually a missing credential.",
+};
+
 function updateSourceStrip(state) {
   const el = document.getElementById("source-strip");
   const metrics = state.sources;
@@ -172,25 +309,28 @@ function updateSourceStrip(state) {
     return;
   }
   const routed = metrics.routed || {};
-  el.innerHTML = Object.entries(metrics.sources).map(([name, s]) => {
-    let mode = "idle";
-    if (s.breaker_open_for_sec > 0) mode = "broken";
-    else if (routed[name]) mode = "serving";
-    const bits = [`${routed[name] || 0} calls`];
+  const chips = Object.entries(metrics.sources).map(([name, s]) => {
+    const mode = s.state || "unknown";
+    const bits = [SOURCE_STATE_NOTE[mode] || mode];
+    bits.push(`${routed[name] || 0} calls routed`);
+    if (s.last_latency_ms) bits.push(`${Math.round(s.last_latency_ms)}ms`);
     if (s.rate_limited) bits.push(`${s.rate_limited}x 429`);
     if (s.failures) bits.push(`${s.failures} failed`);
     if (s.breaker_open_for_sec > 0) {
       bits.push(`retrying in ${Math.ceil(s.breaker_open_for_sec)}s`);
     }
-    const title = `${bits.join(" · ")}`
+    if (s.metered) bits.push(`metered: ${s.metered_units} units used`);
+    const title = bits.join(" · ")
       + (s.last_error ? ` — ${s.last_error}` : "");
-    return `<span class="src" data-state="${mode}" title="${esc(title)}">`
-      + `${esc(name)}</span>`;
-  }).join("")
-    + (metrics.failovers
-        ? `<span class="src" title="Calls that fell through to another `
-          + `source after the preferred one failed.">`
-          + `${metrics.failovers} failovers</span>` : "");
+    return `<span class="src" data-state="${esc(mode)}" `
+      + `title="${esc(title)}">${esc(name)}</span>`;
+  });
+  if (metrics.failovers) {
+    chips.push('<span class="src" data-state="down" title="Calls that fell '
+      + 'through to another source after the preferred one failed.">'
+      + `${metrics.failovers} failovers</span>`);
+  }
+  el.innerHTML = chips.join("");
 }
 
 // The countdown must tick even when no events arrive.

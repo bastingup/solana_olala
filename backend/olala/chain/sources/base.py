@@ -40,6 +40,20 @@ class SourceStats:
     metered_units: int = 0
     last_error: str = ""
     last_latency_sec: float = 0.0
+    #: When this source last answered, and last refused to. Together they
+    #: separate "we have not asked it" from "it is down" — a distinction
+    #: the operator cannot make from a call count alone.
+    last_ok_at: float = 0.0
+    last_failure_at: float = 0.0
+
+    @property
+    def last_contact_at(self) -> float:
+        return max(self.last_ok_at, self.last_failure_at)
+
+    @property
+    def responding(self) -> bool:
+        """Did its most recent contact succeed?"""
+        return bool(self.last_ok_at) and self.last_ok_at >= self.last_failure_at
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +63,9 @@ class SourceStats:
             "metered_units": self.metered_units,
             "last_error": self.last_error,
             "last_latency_ms": round(self.last_latency_sec * 1000.0, 1),
+            "last_ok_at": self.last_ok_at,
+            "last_failure_at": self.last_failure_at,
+            "responding": self.responding,
         }
 
 

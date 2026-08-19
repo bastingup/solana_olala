@@ -8,6 +8,9 @@ a derived interval, and a push path that must not move the watermark.
 
 import time
 
+import pytest
+
+from olala.chain.errors import ChainError
 from olala.chain.sources.base import BatchItem
 from olala.domain.models import TraderProfile, TraderStatus
 from olala.services.traders import TraderRegistry
@@ -274,14 +277,105 @@ def test_round_robin_covers_the_whole_roster_one_wallet_at_a_time(
     assert marks[OTHER][1] == "t0"
 
 
-def test_a_stale_stream_proof_upshifts_back_to_batch(db, bus, config_store):
+def test_a_quiet_stream_does_not_upshift(db, bus, config_store):
+    """Silence is not failure. Treating a quiet market as a broken
+    stream flapped the tracker onto the expensive gear every time
+    trading went still for a minute — ten times the budget to learn
+    nothing."""
     provider, registry, queue, tracker = make_world(db, bus, config_store)
     provider.signatures[TRADER] = [sig_entry("s0", 100)]
     tracker.note_stream_alive()
     tracker.note_stream_alive()
-    tracker._last_stream_proof = time.time() - 3600     # long silent
+    tracker.tick()
+    assert tracker.status.gear == Gear.ROUND_ROBIN.value
+
+    tracker._last_stream_proof = time.time() - 86_400   # a day of quiet
+    tracker.tick()
+    assert tracker.status.gear == Gear.ROUND_ROBIN.value
+
+
+def test_a_dropped_socket_upshifts_immediately(db, bus, config_store):
+    """A disconnect needs no inference."""
+    provider = FakeProvider()
+    provider.router = FakeRouter(provider)
+    registry = TraderRegistry(db, bus)
+    registry.update(TraderProfile(address=TRADER,
+                                  status=TraderStatus.FOLLOWED,
+                                  assigned_wallet_id="w1"))
+    connected = {"ok": True}
+    tracker = WalletTracker(config_store, provider, registry, db,
+                            RecordingQueue(),
+                            stream_health=lambda: connected["ok"])
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+    tracker.tick()
+    assert tracker.status.gear == Gear.ROUND_ROBIN.value
+
+    connected["ok"] = False
     tracker.tick()
     assert tracker.status.gear == Gear.BATCH.value
+
+
+def test_a_trade_the_stream_missed_upshifts_and_is_counted(db, bus,
+                                                           config_store):
+    """The real proof. A stream that has gone silently dead is caught by
+    the poll finding a trade it should have delivered."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+    assert tracker._stream_is_proven() is True
+    # The stream has been answerable for a while — so a trade landing
+    # now IS its responsibility.
+    tracker._stream_trusted_since = time.time() - 300
+
+    # A trade well past the grace window that the push never reported.
+    old = config_store.config.tracking.stream_miss_grace_sec + 30
+    swap_for(provider, "missed", age_sec=old)
+    provider.signatures[TRADER] = [sig_entry("missed", 200, age_sec=old),
+                                   sig_entry("s0", 100)]
+    sweep(tracker)
+
+    assert tracker.status.stream_misses == 1
+    assert tracker._stream_is_proven() is False
+    tracker.tick()
+    assert tracker.status.gear == Gear.BATCH.value
+
+
+def test_a_trade_inside_the_grace_window_is_not_a_miss(db, bus,
+                                                       config_store):
+    """An ordinary race between a notification and a sweep must not be
+    mistaken for a broken subscription."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+
+    swap_for(provider, "fresh", age_sec=1.0)
+    provider.signatures[TRADER] = [sig_entry("fresh", 200, age_sec=1.0),
+                                   sig_entry("s0", 100)]
+    sweep(tracker)
+
+    assert tracker.status.stream_misses == 0
+    assert tracker._stream_is_proven() is True
+
+
+def test_the_push_path_never_reports_itself_as_a_miss(db, bus,
+                                                      config_store):
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+
+    old = config_store.config.tracking.stream_miss_grace_sec + 30
+    swap_for(provider, "viapush", age_sec=old)
+    tracker.note_activity(TRADER, "viapush", 300)
+
+    assert tracker.status.stream_misses == 0
 
 
 def test_no_batch_capable_source_degrades_to_round_robin_not_blindness(
@@ -606,3 +700,215 @@ def test_state_for_unfollowed_traders_is_dropped_from_memory(db, bus,
     # The PERSISTED watermark survives: re-following must not replay
     # their history as live trades.
     assert db.load_watermarks()[OTHER][1] == "t0"
+
+
+# -- the refresh bar's data ------------------------------------------------
+#
+# The bar answers one question — "when will every followed wallet have
+# fresh data, and did the last pull work?" — so the status must report a
+# coverage WINDOW rather than a bare countdown. That lets the UI
+# interpolate smoothly between 1s updates, and makes both gears answer
+# the same question the same way.
+
+def test_a_batch_sweep_opens_its_window_on_completion_not_on_start(
+        db, bus, config_store):
+    """Opening it at the start left the window already expired by the
+    time a multi-second sweep finished: a bar pinned at 100% that never
+    told the operator anything."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+
+    s = tracker.status
+    now = time.time()
+    assert s.coverage_started_at <= now + 0.5
+    # The window spans the derived interval and lies in the FUTURE.
+    assert s.coverage_complete_at > now
+    assert (s.coverage_complete_at - s.coverage_started_at) == \
+        pytest.approx(s.configured_interval_sec, abs=0.5)
+
+
+def test_a_batch_sweep_reports_every_wallet_it_refreshed(db, bus,
+                                                         config_store):
+    provider, registry, queue, tracker = make_world(
+        db, bus, config_store, followed=(TRADER, OTHER))
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    provider.signatures[OTHER] = [sig_entry("t0", 100)]
+    sweep(tracker)
+
+    assert tracker.status.last_poll_ok is True
+    assert tracker.status.pass_position == 2
+    assert "2/2 wallets refreshed" in tracker.status.last_poll_detail
+    assert tracker.status.polls_ok == 1
+
+
+def test_a_partly_failed_sweep_is_not_reported_as_success(db, bus,
+                                                          config_store):
+    """Calling it 'ok' would hide exactly the wallets going stale."""
+    provider, registry, queue, tracker = make_world(
+        db, bus, config_store, followed=(TRADER, OTHER))
+
+    class PartialRouter(FakeRouter):
+        def batch(self, policy, items, timeout=None):
+            self.batch_calls.append(list(items))
+            return [RuntimeError("that address is malformed"),
+                    [sig_entry("t0", 100)]]
+
+    provider.router = PartialRouter(provider)
+    tracker._router = provider.router
+    sweep(tracker)
+
+    assert tracker.status.last_poll_ok is False
+    assert "1 failed" in tracker.status.last_poll_detail
+    assert tracker.status.polls_failed == 1
+
+
+def test_round_robin_reports_progress_across_the_whole_pass(db, bus,
+                                                            config_store):
+    """'Next pull in 1s' is true but useless; what matters is when the
+    whole roster has been seen."""
+    provider, registry, queue, tracker = make_world(
+        db, bus, config_store, followed=(TRADER, OTHER))
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    provider.signatures[OTHER] = [sig_entry("t0", 100)]
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+
+    tracker.tick()
+    assert tracker.status.pass_position == 1
+    span = (tracker.status.coverage_complete_at
+            - tracker.status.coverage_started_at)
+    # The window covers the whole roster, not one tick.
+    assert span == pytest.approx(2 * tracker.interval_sec(), abs=0.5)
+
+    tracker.tick()
+    assert tracker.status.pass_position == 2
+
+
+def test_a_new_pass_reopens_the_window(db, bus, config_store):
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+
+    tracker.tick()
+    first = tracker.status.coverage_started_at
+    tracker.tick()               # roster of 1: the pass wraps immediately
+    assert tracker.status.coverage_complete_at > first
+
+
+def test_a_failed_round_robin_poll_is_reported(db, bus, config_store):
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+
+    def broken(address, limit=100, before=None):
+        raise ChainError("node refused")
+
+    provider.get_signatures = broken
+    tracker.tick()
+
+    assert tracker.status.last_poll_ok is False
+    assert tracker.status.polls_failed == 1
+
+
+def test_an_unexpected_error_never_leaves_the_bar_claiming_success(
+        db, bus, config_store):
+    """A bar that keeps reporting the last success while the tracker is
+    broken is worse than no bar at all."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    assert tracker.status.last_poll_ok is True
+
+    class Exploding:
+        def batch_capable(self, policy):
+            return "publicnode"
+
+        def batch(self, policy, items, timeout=None):
+            raise RuntimeError("something nobody anticipated")
+
+    tracker._router = Exploding()
+    tracker._stream_proofs = 0          # force the batch gear
+    sweep(tracker)
+
+    assert tracker.status.last_poll_ok is False
+    assert "something nobody anticipated" in tracker.status.last_poll_detail
+
+
+def test_an_empty_roster_reports_no_window_so_the_bar_hides(db, bus,
+                                                            config_store):
+    provider, registry, queue, tracker = make_world(db, bus, config_store,
+                                                    followed=())
+    tracker.tick()
+    assert tracker.status.coverage_complete_at == 0.0
+
+
+def test_changing_gear_expires_the_old_coverage_window(db, bus,
+                                                       config_store):
+    """The gears measure coverage differently, so a window opened by one
+    describes nothing under the other — and counting down to a moment
+    that no longer means anything is exactly what this bar must not do."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+    tracker.tick()                       # round-robin opens a window
+    assert tracker.status.gear == Gear.ROUND_ROBIN.value
+    assert tracker.status.coverage_complete_at > time.time()
+
+    tracker._stream_proofs = 0                # the stream loses trust
+    tracker._next_batch_at = float("inf")     # no sweep this tick
+    tracker.tick()
+
+    assert tracker.status.gear == Gear.BATCH.value
+    # Expired: the bar reads "pulling", not a stale round-robin countdown.
+    assert tracker.status.coverage_complete_at <= time.time()
+
+
+def test_a_trade_predating_the_subscription_is_not_the_streams_fault(
+        db, bus, config_store):
+    """Found live: on startup the first sweep picks up trades from while
+    the app was OFF. Blaming the stream for those pinned the tracker to
+    the expensive gear on every single restart."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    sweep(tracker)
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()          # trust starts NOW
+
+    # A trade from before the subscription existed.
+    old = config_store.config.tracking.stream_miss_grace_sec + 600
+    swap_for(provider, "from-downtime", age_sec=old)
+    provider.signatures[TRADER] = [sig_entry("from-downtime", 200,
+                                             age_sec=old),
+                                   sig_entry("s0", 100)]
+    sweep(tracker)
+
+    assert tracker.status.stream_misses == 0
+    assert tracker._stream_is_proven() is True
+
+
+def test_a_reconnect_restarts_the_streams_responsibility(db, bus,
+                                                         config_store):
+    """Trades that land while the socket is down are not evidence
+    against the subscription that comes back up."""
+    connected = {"ok": True}
+    provider = FakeProvider()
+    provider.router = FakeRouter(provider)
+    registry = TraderRegistry(db, bus)
+    registry.update(TraderProfile(address=TRADER,
+                                  status=TraderStatus.FOLLOWED,
+                                  assigned_wallet_id="w1"))
+    tracker = WalletTracker(config_store, provider, registry, db,
+                            RecordingQueue(),
+                            stream_health=lambda: connected["ok"])
+    tracker.note_stream_alive()
+    tracker.note_stream_alive()
+    tracker._stream_trusted_since = time.time() - 300
+
+    connected["ok"] = False
+    assert tracker._stream_is_proven() is False
+    assert tracker._stream_trusted_since == 0.0     # responsibility ended

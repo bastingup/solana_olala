@@ -55,6 +55,14 @@ memory, and the operator relies on them across sessions.
   never saw our transaction answers `null`, which is indistinguishable
   from "it never landed" — that wrote TIMEOUT receipts for swaps that
   were confirming. Use `RoutedProvider.broadcast_session()`.
+- **The push stream is judged by what it MISSES, never by silence.**
+  A quiet market produces no notifications, so a staleness timeout
+  flapped tracking onto the expensive gear every time trading went still
+  for a minute. Evidence of a dead subscription is the POLL catching a
+  trade older than `tracking.stream_miss_grace_sec` that the stream never
+  reported — and only for trades that landed while the stream was
+  answerable (after it had proven itself, and not across a reconnect),
+  or every restart would blame it for downtime.
 - **The cursor is a `(slot, signature)` watermark, never a bare
   signature.** A signature cannot be compared, so a window that missed
   it made the old follower treat every entry as fresh and re-copy them.

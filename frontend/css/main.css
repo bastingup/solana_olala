@@ -390,6 +390,79 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .scan-counters .blocked b { color: var(--loss); }
 .scan-counters .admitted b { color: var(--gain); }
 
+/* The refresh bar: how long until every followed wallet has fresh data,
+   and whether the last pull actually worked. Both gears answer the same
+   question — batching refreshes everyone at once, round-robin walks the
+   roster — so they share one bar rather than teaching the operator two
+   mental models. */
+.track-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.track-bar[hidden] { display: none; }
+
+.track-bar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.track-bar-head b { color: var(--ink); font-weight: 500; }
+
+/* The outcome of the LAST pull, stated in words as well as colour —
+   colour alone is not a message everyone can read. */
+.track-bar-status[data-state="ok"] { color: var(--gain); }
+.track-bar-status[data-state="partial"] { color: var(--loss); }
+.track-bar-status[data-state="failed"] { color: var(--loss); }
+.track-bar-status[data-state="waiting"] { color: var(--ink-faint); }
+
+.track-bar-rail {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--nebula-line);
+  overflow: hidden;
+}
+
+/* Scaled, not resized. This bar animates for as long as the app is
+   open, and animating `width` would force a layout pass every frame —
+   on the same page as the D3 galaxy simulation. A transform is
+   composited instead, so it costs nothing to keep moving. The rail
+   clips the rounded ends, so the fill needs no radius of its own (which
+   scaleX would squash anyway). */
+.track-bar-fill {
+  height: 100%;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: var(--nebula);
+  /* Matches the 1s status cadence, so the bar glides between updates
+     instead of stepping. */
+  transition: transform 1s linear;
+}
+
+/* A refresh that failed must not keep drawing a confident purple bar. */
+.track-bar[data-state="failed"] .track-bar-fill,
+.track-bar[data-state="partial"] .track-bar-fill {
+  background: var(--loss);
+}
+
+/* Mid-pull: the bar is full and the system is working, so it pulses
+   rather than sitting at 100% looking stalled. */
+.track-bar[data-state="polling"] .track-bar-fill {
+  background: var(--gain);
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track-bar-fill { transition: none; }
+}
+
 /* Tracking: what the watcher is doing right now, and which gear it is
    in. The gear matters — round-robin is the cheap one and only runs
    while the stream has proven itself. */
@@ -435,14 +508,40 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid var(--nebula-line);
+  transition: color 200ms ease, border-color 200ms ease;
 }
-.source-strip .src[data-state="serving"] {
+
+/* Healthy sources share ONE hue at two weights rather than two similar
+   colours: at chip size, "which of these two blues is the good one" is a
+   question nobody should have to answer. Filled = carrying the load,
+   outlined = answering and ready to take it. Down is the only state that
+   changes hue, because it is the only one that needs to interrupt. */
+.source-strip .src[data-state="active"] {
+  border-color: var(--gain);
+  background: var(--gain);
+  color: var(--space);
+  font-weight: 500;
+}
+
+.source-strip .src[data-state="ready"] {
   border-color: var(--gain);
   color: var(--gain);
 }
-.source-strip .src[data-state="broken"] {
+
+.source-strip .src[data-state="down"] {
   border-color: var(--loss);
   color: var(--loss);
+}
+
+/* Never contacted, or switched off: dimmed, and deliberately NOT red —
+   "we have not asked" is not the same claim as "it is broken". */
+.source-strip .src[data-state="unknown"],
+.source-strip .src[data-state="off"] {
+  color: var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-strip .src { transition: none; }
 }
 
 .scan-banner[hidden] { display: none; }

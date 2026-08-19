@@ -225,6 +225,7 @@ class JsonRpcSource:
             raise SourceDataError(f"{method}: non-JSON response: {exc}",
                                   source=self.name) from exc
 
+        self._stats.last_ok_at = time.time()
         self._stats.calls += 1
         self._stats.sub_calls += sub_calls
         if sub_calls > 1:
@@ -252,6 +253,7 @@ class JsonRpcSource:
     def _note_failure(self, detail: str) -> None:
         self._stats.failures += 1
         self._stats.last_error = detail
+        self._stats.last_failure_at = time.time()
 
 
 class SourceIncompleteResponse(SourceDataError):

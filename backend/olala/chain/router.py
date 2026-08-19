@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from typing import Any, Callable, Iterator
 
 from ..config import AppConfig
@@ -41,6 +42,13 @@ logger = logging.getLogger(__name__)
 # Long enough to absorb ordinary jitter, short enough that a throttled
 # source never becomes the reason a poll cycle overruns.
 DEFAULT_RESERVE_TIMEOUT_SEC = 1.5
+
+# How recently a source must have served ROUTED traffic to count as the
+# one carrying the load, rather than a standby that merely answers.
+ACTIVE_WINDOW_SEC = 10.0
+# Beyond this we have not confirmed the source lately — longer than the
+# metered probe interval, so a healthy Helius never looks stale.
+READY_WINDOW_SEC = 600.0
 
 
 class NoSourceAvailable(ChainError):
@@ -70,6 +78,7 @@ class RpcRouter:
         self._reserve_timeout = reserve_timeout_sec
         self._lock = threading.Lock()
         self._routed: dict[str, int] = {}
+        self._routed_at: dict[str, float] = {}
         self._failovers = 0
         for policy, names in self._policies.items():
             if not names:
@@ -117,10 +126,48 @@ class RpcRouter:
                     "supports_batch": source.supports_batch,
                     "max_batch": source.max_batch,
                     "metered": source.metered,
+                    "state": self.source_state(name),
                 }
                 for name, source in self._sources.items()
             },
         }
+
+    def source_state(self, name: str) -> str:
+        """One word for what this source is doing for us right now.
+
+        Computed here rather than in the UI because only the router knows
+        the difference between "not needed" and "not working" — and a
+        standby endpoint shown in the same colour as a broken one hides
+        the very failure the fall-through exists to survive.
+
+            off      configured but disabled (no credential, say)
+            active   serving traffic now
+            ready    answered recently, standing by
+            down     its last contact failed, or its breaker is open
+            unknown  never contacted; nothing to claim either way
+        """
+        source = self._sources.get(name)
+        if source is None or not source.enabled:
+            return "off"
+        if not self._breakers[name].closed:
+            return "down"
+        stats = source.stats
+        if not stats.last_contact_at:
+            return "unknown"
+        if not stats.responding:
+            return "down"
+        # "Active" means SERVING, which is not the same as "answered
+        # something recently" — a health probe would otherwise make an
+        # idle standby look like it was carrying the load for ten seconds
+        # out of every thirty. Only calls the router actually routed
+        # count, and probes go straight to the source, bypassing it.
+        with self._lock:
+            routed_at = self._routed_at.get(name, 0.0)
+        now = time.time()
+        if now - routed_at <= ACTIVE_WINDOW_SEC:
+            return "active"
+        return "ready" if now - stats.last_ok_at <= READY_WINDOW_SEC \
+            else "unknown"
 
     # -- routing -----------------------------------------------------------
 
@@ -246,6 +293,7 @@ class RpcRouter:
     def _count(self, name: str) -> None:
         with self._lock:
             self._routed[name] = self._routed.get(name, 0) + 1
+            self._routed_at[name] = time.time()
 
     def _note_failover(self) -> None:
         with self._lock:

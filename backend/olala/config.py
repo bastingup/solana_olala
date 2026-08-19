@@ -164,10 +164,11 @@ class TrackingConfig:
     # are never blocked by age.
     max_signal_age_sec: float = 90.0
     price_mark_interval_sec: int = 20
-    # The stream must prove liveness this often to keep the cheap gear;
-    # logsSubscribe dies silently on public RPC, so absence of
-    # notifications is not evidence of absence of trades.
-    stream_proof_interval_sec: float = 60.0
+    # How long the push stream gets to deliver a trade before the poll
+    # finding it first counts as a MISS. logsSubscribe dies silently on
+    # public RPC, so the stream is judged by what it fails to deliver —
+    # never by silence, which a quiet market produces on its own.
+    stream_miss_grace_sec: float = 20.0
 
 
 @dataclass

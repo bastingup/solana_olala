@@ -80,7 +80,7 @@ tracking:
   max_transactions_per_cycle: 60
   max_signal_age_sec: 90.0
   price_mark_interval_sec: 20
-  stream_proof_interval_sec: 60.0
+  stream_miss_grace_sec: 20.0
 
 risk:
   max_liquidity_fraction: 0.01

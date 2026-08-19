@@ -9,6 +9,8 @@ Two behaviours here are money-safety properties, not conveniences:
   into "definitively never landed".
 """
 
+import time
+
 import pytest
 
 from olala.chain.errors import (SourceRateLimited, SourceRejected,
@@ -34,6 +36,7 @@ class FakeSource:
         self._unsupported = set(unsupported)
         self.stats = SourceStats()
         self.calls = []
+        self.responding = True
         self.batches = []
         self.reservations = []
 
@@ -50,7 +53,9 @@ class FakeSource:
     def call(self, method, params):
         self.calls.append((method, params))
         if self._error is not None:
+            self.stats.last_failure_at = time.time()
             raise self._error
+        self.stats.last_ok_at = time.time()
         return self._results.pop(0) if self._results else f"{self.name}-ok"
 
     def batch(self, items):
@@ -295,3 +300,67 @@ def test_single_source_provider_needs_no_pinning():
     provider = RoutedProvider(make_router({"only": only}))
     with provider.broadcast_session() as channel:
         assert channel.send_transaction("tx") == "SIG"
+
+
+# -- what the operator sees ------------------------------------------------
+#
+# A standby endpoint of unknown health is not a fall-through you can
+# trust. These states are what make the difference between "we have not
+# needed this one" and "this one is dead" visible.
+
+def test_an_uncontacted_source_claims_nothing():
+    router = make_router({"a": FakeSource("a")})
+    assert router.source_state("a") == "unknown"
+
+
+def test_a_source_serving_routed_traffic_is_active():
+    router = make_router({"a": FakeSource("a")})
+    router.call("history", "getBalance", ["x"])
+    assert router.source_state("a") == "active"
+
+
+def test_a_source_that_only_answered_a_probe_is_ready_not_active():
+    """A health probe goes straight to the source, bypassing the router.
+    Counting it as traffic made an idle standby look like it was carrying
+    the load for ten seconds out of every thirty."""
+    import time as _time
+
+    standby = FakeSource("standby")
+    router = make_router({"standby": standby})
+    # Exactly what SourceHealthDaemon does: call the source directly.
+    standby.call("getHealth", [])
+    standby.stats.last_ok_at = _time.time()
+
+    assert router.source_state("standby") == "ready"
+
+
+def test_a_source_whose_last_contact_failed_is_down():
+    import time as _time
+
+    source = FakeSource("a")
+    router = make_router({"a": source})
+    source.stats.last_ok_at = _time.time() - 60
+    source.stats.last_failure_at = _time.time()
+    assert router.source_state("a") == "down"
+
+
+def test_an_open_breaker_reads_as_down():
+    a = FakeSource("a", error=SourceUnavailable("down", source="a"))
+    b = FakeSource("b")
+    router = make_router({"a": a, "b": b})
+    for _ in range(4):
+        router.call("history", "getBalance", ["x"])
+    assert router.source_state("a") == "down"
+
+
+def test_a_disabled_source_is_off_not_down():
+    """'No credential' and 'broken' are different problems and must not
+    look the same."""
+    router = make_router({"a": FakeSource("a", enabled=False)})
+    assert router.source_state("a") == "off"
+
+
+def test_metrics_carry_the_state_to_the_ui():
+    router = make_router({"a": FakeSource("a")})
+    router.call("history", "getBalance", ["x"])
+    assert router.metrics()["sources"]["a"]["state"] == "active"

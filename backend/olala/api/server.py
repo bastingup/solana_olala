@@ -14,6 +14,7 @@ from flask import Flask, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 from flask_sock import Sock
 
+from ..chain.health import SourceHealthDaemon
 from ..chain.jupiter import JupiterClient
 from ..chain.market_data import MarketDataService
 from ..chain.provider import build_provider
@@ -97,7 +98,8 @@ class AppContext:
         self.signals = SignalQueue(self.engine.handle_signal)
         self.tracker = WalletTracker(
             self.store, self.provider, self.registry, self.db,
-            self.signals, on_status=self._publish_tracking)
+            self.signals, on_status=self._publish_tracking,
+            stream_health=lambda: self.subscriber.healthy)
         self.subscriber = TraderSubscriber(
             self.provider, self.registry,
             on_activity=self.tracker.note_activity,
@@ -115,6 +117,11 @@ class AppContext:
                        self.atr, self.engine, self.bus),
             self.subscriber,
         ]
+        # Standby sources are never contacted by routing alone, so their
+        # health would otherwise be unknown until the moment we needed
+        # them — which is the worst moment to find out.
+        if hasattr(self.provider, "router"):
+            self.daemons.append(SourceHealthDaemon(self.provider.router))
         logger.info("application context ready (provider: %s%s)",
                     self.provider.name,
                     ", dev mode" if config.dev_mode else "")

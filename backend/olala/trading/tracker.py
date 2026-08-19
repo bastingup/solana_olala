@@ -91,6 +91,8 @@ class TrackingStatus:
     signals_emitted: int = 0
     stale_entries_blocked: int = 0
     gaps_detected: int = 0
+    #: Trades the poll caught that the push stream never reported.
+    stream_misses: int = 0
     #: Pre-slot cursors that were still visible and simply learned their
     #: slot. Nothing was lost.
     legacy_upgraded: int = 0
@@ -98,6 +100,28 @@ class TrackingStatus:
     #: moved to the newest entry. Trades in the gap were NOT copied.
     legacy_rearmed: int = 0
     batch_source: str = ""
+
+    # -- the coverage window ------------------------------------------
+    #
+    # "When will every followed wallet have fresh data again?" is one
+    # question with two implementations. Batching refreshes everyone at
+    # once, so the window is the wait for the next sweep. Round-robin
+    # refreshes one wallet per tick, so the window is the pass across the
+    # roster. Both are reported the same way, because to an operator they
+    # mean the same thing.
+    coverage_started_at: float = 0.0
+    coverage_complete_at: float = 0.0
+    #: Wallets refreshed so far in this window (equals `roster` when a
+    #: batch sweep lands, counts up one at a time in round-robin).
+    pass_position: int = 0
+
+    # -- did the last pull work? --------------------------------------
+    last_poll_at: float = 0.0
+    last_poll_ok: bool = True
+    last_poll_detail: str = ""
+    polls_ok: int = 0
+    polls_failed: int = 0
+
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,9 +137,18 @@ class TrackingStatus:
             "signals_emitted": self.signals_emitted,
             "stale_entries_blocked": self.stale_entries_blocked,
             "gaps_detected": self.gaps_detected,
+            "stream_misses": self.stream_misses,
             "legacy_upgraded": self.legacy_upgraded,
             "legacy_rearmed": self.legacy_rearmed,
             "batch_source": self.batch_source,
+            "coverage_started_at": self.coverage_started_at,
+            "coverage_complete_at": self.coverage_complete_at,
+            "pass_position": self.pass_position,
+            "last_poll_at": self.last_poll_at,
+            "last_poll_ok": self.last_poll_ok,
+            "last_poll_detail": self.last_poll_detail,
+            "polls_ok": self.polls_ok,
+            "polls_failed": self.polls_failed,
             "errors": list(self.errors[-5:]),
         }
 
@@ -126,7 +159,8 @@ class WalletTracker(Daemon):
     def __init__(self, store: ConfigStore, provider: RpcProvider,
                  registry: TraderRegistry, db: Database,
                  queue: SignalQueue,
-                 on_status: Callable[[dict], None] | None = None) -> None:
+                 on_status: Callable[[dict], None] | None = None,
+                 stream_health: Callable[[], bool] | None = None) -> None:
         super().__init__("tracker", store.config.tracking.tick_sec)
         self._store = store
         self._provider = provider
@@ -135,6 +169,9 @@ class WalletTracker(Daemon):
         self._db = db
         self._queue = queue
         self._on_status = on_status
+        # Reports whether the push socket is actually connected. A drop
+        # is immediate grounds for distrust; silence alone is not.
+        self._stream_health = stream_health
         self._reconstructor = TradeReconstructor()
         self._lock = threading.Lock()
         self._watermarks: dict[str, Watermark] = {}
@@ -145,6 +182,9 @@ class WalletTracker(Daemon):
         self._last_sweep_at = 0.0
         self._stream_proofs = 0
         self._last_stream_proof = 0.0
+        # When the stream became answerable for delivering trades. A
+        # trade that landed before this cannot indict it.
+        self._stream_trusted_since = 0.0
         self.status = TrackingStatus()
         self._load_watermarks()
 
@@ -185,8 +225,13 @@ class WalletTracker(Daemon):
         nothing happened. Only positive proof lets the cheap gear run.
         """
         with self._lock:
-            self._last_stream_proof = time.time()
+            now = time.time()
+            self._last_stream_proof = now
             self._stream_proofs += 1
+            if (self._stream_proofs >= DOWNSHIFT_PROOFS
+                    and not self._stream_trusted_since):
+                # From here on the stream is answerable for what lands.
+                self._stream_trusted_since = now
 
     def note_activity(self, address: str, signature: str = "",
                       slot: int = 0) -> None:
@@ -211,18 +256,62 @@ class WalletTracker(Daemon):
         if signature in self._processed_for(address):
             return
         try:
-            self._handle_signature(address, signature, slot)
+            self._handle_signature(address, signature, slot, via_push=True)
         except ChainError as exc:
             logger.warning("push-path fetch failed for %s: %s", address, exc)
 
     def _stream_is_proven(self) -> bool:
-        config = self._store.config.tracking
-        with self._lock:
-            proofs = self._stream_proofs
-            last = self._last_stream_proof
-        if proofs < DOWNSHIFT_PROOFS:
+        """Is the push stream trustworthy enough for the cheap gear?
+
+        NOT "have we heard from it lately". A quiet market produces no
+        notifications, and treating that as failure flapped the tracker
+        onto the expensive gear every time trading went still for a
+        minute — burning ten times the budget to learn nothing.
+
+        Silence is not evidence. What IS evidence is the poll catching a
+        trade the stream should have delivered and did not; see
+        :meth:`_note_stream_miss`. Until that happens, or the socket
+        drops, a stream that has delivered is assumed to still deliver.
+        """
+        if self._stream_health is not None and not self._stream_health():
+            # A dropped socket needs no inference. Trust restarts with
+            # the next connection, so trades that land during the gap
+            # are not later blamed on a subscription that was not up.
+            with self._lock:
+                self._stream_trusted_since = 0.0
             return False
-        return (time.time() - last) <= config.stream_proof_interval_sec
+        with self._lock:
+            return self._stream_proofs >= DOWNSHIFT_PROOFS
+
+    def _note_stream_miss(self, trade) -> None:
+        """The poll found a trade the stream never reported.
+
+        Only counted once the push has had ample time to deliver, so an
+        ordinary race between a notification and a sweep is not mistaken
+        for a broken subscription. The stream must then re-earn the cheap
+        gear by delivering again.
+        """
+        grace = self._store.config.tracking.stream_miss_grace_sec
+        age = time.time() - (trade.block_time or 0.0)
+        if not trade.block_time or age <= grace:
+            return
+        with self._lock:
+            if self._stream_proofs == 0:
+                return                      # already distrusted
+            trusted_since = self._stream_trusted_since
+            if not trusted_since or trade.block_time <= trusted_since:
+                # It landed before the stream was answerable — at
+                # startup, or during a reconnect. Blaming the current
+                # subscription for that would pin the tracker to the
+                # expensive gear on every restart.
+                return
+            self._stream_proofs = 0
+            self._stream_trusted_since = 0.0
+        self.status.stream_misses += 1
+        logger.warning(
+            "the poll found a %.0fs-old trade on %s that the push stream "
+            "never reported — switching to the batch sweep until the "
+            "stream proves itself again", age, trade.trader[:8])
 
     # -- the tick ----------------------------------------------------------
 
@@ -238,6 +327,16 @@ class WalletTracker(Daemon):
             # source can serve, so degrade rather than go blind.
             gear = Gear.ROUND_ROBIN
 
+        if gear.value != self.status.gear:
+            # The two gears measure coverage differently, so a window
+            # opened by the old one describes nothing now. Expiring it
+            # makes the bar say "pulling" — which is true, since a
+            # change of gear is immediately followed by a pull — rather
+            # than counting down to a moment that no longer means
+            # anything.
+            self.status.coverage_complete_at = time.time()
+            logger.info("tracking gear: %s -> %s", self.status.gear,
+                        gear.value)
         self.status.gear = gear.value
         self.status.roster = len(roster)
         self.status.stream_proven = proven
@@ -252,6 +351,20 @@ class WalletTracker(Daemon):
         interval = self._derived_interval(len(roster), batch_source)
         self.status.configured_interval_sec = interval
 
+        try:
+            self._run_gear(gear, roster, interval)
+        except Exception as exc:                            # noqa: BLE001
+            # Expected failures are handled inside each gear. Anything
+            # else must still land in the status: a bar that keeps
+            # reporting the last success while the tracker is broken is
+            # worse than no bar at all.
+            logger.exception("tracking tick failed")
+            self._note_error(f"tick failed: {exc}")
+            self._note_poll(False, f"tracker error: {exc}", 0)
+        self._publish_status()
+
+    def _run_gear(self, gear: "Gear", roster: list[str],
+                  interval: float) -> None:
         if gear is Gear.ROUND_ROBIN:
             self.status.full_coverage_sec = len(roster) * self.interval_sec()
             self._poll_next(roster)
@@ -266,7 +379,12 @@ class WalletTracker(Daemon):
                 if after - now > interval:
                     self.status.skipped_cycles += 1
                 self._next_batch_at = after + interval
-        self._publish_status()
+                # The window is the wait for the NEXT refresh, so it
+                # opens now that this one has landed. Opening it at the
+                # start instead left it already expired by the time a
+                # multi-second sweep finished — a bar pinned at 100%
+                # that never told the operator anything.
+                self._open_coverage_window(interval)
 
     def _forget_unfollowed(self, roster: list[str]) -> None:
         """Drop in-memory state for traders no longer followed.
@@ -307,12 +425,21 @@ class WalletTracker(Daemon):
         with self._lock:
             if self._cursor_index >= len(roster):
                 self._cursor_index = 0
+            if self._cursor_index == 0:
+                # A new pass over the roster starts here; the coverage
+                # window is how long it takes to reach everyone.
+                self._open_coverage_window(
+                    len(roster) * self.interval_sec())
             address = roster[self._cursor_index]
+            position = self._cursor_index + 1
             self._cursor_index = (self._cursor_index + 1) % len(roster)
         try:
             self._reconcile(address, first_page=None)
         except (ChainError, NoSourceAvailable) as exc:
             self._note_error(f"{address[:8]}: {exc}")
+            self._note_poll(False, f"{address[:8]}: {exc}", position)
+        else:
+            self._note_poll(True, f"{address[:8]} refreshed", position)
         self._mark_swept()
 
     def _sweep(self, roster: list[str], interval: float) -> None:
@@ -334,17 +461,52 @@ class WalletTracker(Daemon):
             # The sweep failed wholesale; the next tick re-evaluates the
             # gear, which is how a dead batch source becomes round-robin.
             self._note_error(f"batch sweep failed: {exc}")
+            self._note_poll(False, f"batch sweep failed: {exc}", 0)
             return
 
+        refreshed = 0
+        failed = 0
         for address, result in zip(roster, results):
             if isinstance(result, Exception):
                 self._note_error(f"{address[:8]}: {result}")
+                failed += 1
                 continue
             try:
                 self._reconcile(address, first_page=result or [])
             except (ChainError, NoSourceAvailable) as exc:
                 self._note_error(f"{address[:8]}: {exc}")
+                failed += 1
+            else:
+                refreshed += 1
+        # A sweep that answered for some wallets and not others is a
+        # PARTIAL success, and saying "ok" would hide the wallets that
+        # are now going stale.
+        detail = (f"{refreshed}/{len(roster)} wallets refreshed"
+                  + (f", {failed} failed" if failed else ""))
+        self._note_poll(failed == 0 and refreshed > 0, detail, refreshed)
         self._mark_swept()
+
+    def _open_coverage_window(self, span_sec: float) -> None:
+        """Start a new window in which every followed wallet is refreshed.
+
+        Deliberately does not touch ``pass_position``: round-robin gets
+        it from the roster cursor, which restarts at 1 of its own accord,
+        and a batch sweep has already reported how many wallets it
+        actually refreshed. Resetting it here silently overwrote that.
+        """
+        now = time.time()
+        self.status.coverage_started_at = now
+        self.status.coverage_complete_at = now + max(span_sec, 0.0)
+
+    def _note_poll(self, ok: bool, detail: str, position: int) -> None:
+        self.status.last_poll_at = time.time()
+        self.status.last_poll_ok = ok
+        self.status.last_poll_detail = detail
+        self.status.pass_position = position
+        if ok:
+            self.status.polls_ok += 1
+        else:
+            self.status.polls_failed += 1
 
     def _mark_swept(self) -> None:
         now = time.time()
@@ -448,7 +610,7 @@ class WalletTracker(Daemon):
                                              before=before)
 
     def _handle_signature(self, address: str, signature: str,
-                          slot: int) -> None:
+                          slot: int, via_push: bool = False) -> None:
         """Claim, fetch, reconstruct, dispatch, persist.
 
         The CLAIM comes first and is atomic. The push path runs on the
@@ -469,6 +631,9 @@ class WalletTracker(Daemon):
             tx = self._provider.get_transaction(signature)
             trade = self._reconstructor.reconstruct(address, signature, tx)
             if trade is not None:
+                if not via_push:
+                    # We got here first, which means the stream did not.
+                    self._note_stream_miss(trade)
                 self._dispatch(address, trade)
         except Exception:                                   # noqa: BLE001
             # The claim must not outlive a failed attempt, or the trade is

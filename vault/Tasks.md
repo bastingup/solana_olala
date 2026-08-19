@@ -188,6 +188,81 @@ Public nodes meter by SUB-CALL, so a 50-address batch costs 50, not 1.
   0 gaps; watermarks armed with real slots; legacy cursors upgraded in
   place with nothing lost.
 
+## Done — refresh bar + stream health by evidence (2026-08-19)
+
+Operator asked for a loading bar showing when followed wallets are next
+pulled and whether the last pull worked. Building it surfaced a design
+bug in the gear switching.
+
+- [x] **Coverage window in `TrackingStatus`** (`coverage_started_at` /
+      `coverage_complete_at` / `pass_position`) plus poll outcome
+      (`last_poll_ok` / `last_poll_detail` / `polls_ok` / `polls_failed`).
+      Both gears answer one question — "when will every followed wallet
+      have fresh data?" — so the UI shows one bar, not two mental models.
+- [x] Round-robin fills by POSITION, not clock: late ticks would
+      otherwise let the bar claim wallets were refreshed when they were
+      not, which is the one thing it exists to be honest about.
+- [x] A partly-failed sweep reports PARTIAL, never "ok" — calling it ok
+      hides exactly the wallets going stale.
+- [x] Bugs found while verifying: the batch window opened at sweep START
+      so it had already expired by the time a ~4s sweep finished (bar
+      pinned at 100%); an unexpected exception left the bar showing the
+      last success while the tracker was broken; a gear change showed the
+      old gear's countdown for a frame; `_open_coverage_window` reset
+      `pass_position` as a side effect, clobbering what the sweep had
+      just reported.
+- [x] The bar SNAPS to zero at the end of a pass instead of easing
+      backwards — animating backwards reads as progress being undone.
+
+**Operator observed the tracker flipping round-robin → batch and asked
+why.** It was not the bar: `stream_proof_interval_sec` treated 60s of
+SILENCE as a dead stream, and a full round-robin pass is 42s, so the two
+timers coincided. Silence is not evidence — a quiet market is silent too.
+
+- [x] Replaced the staleness timeout with a real cross-check: the stream
+      is distrusted when the POLL finds a trade older than
+      `tracking.stream_miss_grace_sec` that the stream never delivered,
+      or when the socket drops. Config key
+      `stream_proof_interval_sec` → `stream_miss_grace_sec`.
+- [x] Only trades the stream was ANSWERABLE for count — after it proved
+      itself, and not across a reconnect. Found live: without this, the
+      first sweep after any restart blamed the stream for trades from
+      while the app was off, pinning it to the expensive gear forever.
+
+## Done — source health made visible (2026-08-19)
+
+- [x] **A render bug hid two panels.** The transform change left
+      `fill.parentElement` pointing at a removed `const fill`, so every
+      render threw a ReferenceError — the bar (updated first) kept
+      working while the gear line and source chips below it silently
+      stopped. `node --check` passes such code; only running it finds it.
+      `tests/js/render_smoke.mjs` now executes the real render functions
+      against a stubbed DOM and asserts every panel fills, wired into
+      pytest as `test_frontend_render.py`. Verified it catches the exact
+      bug when reintroduced. No npm dependency — this frontend vendors
+      its libraries on purpose.
+- [x] **Idle sources are health-probed** (`chain/health.py`). Routing
+      only ever contacts the source it routes to, so a standby collected
+      no evidence at all — leaving "we have not needed it" and "it is
+      dead" indistinguishable, which is exactly the failure the
+      fall-through ordering exists to survive. `getHealth` every 30s,
+      skipped for anything that served real traffic recently; metered
+      sources 10x less often, because a credit spent proving Helius is
+      alive is a credit not spent fetching a trade.
+- [x] Per-source `state` computed in the router (`off` / `active` /
+      `ready` / `down` / `unknown`) so the UI never has to guess.
+      "Active" counts ROUTED traffic only — a probe answer was briefly
+      making an idle standby look like it was carrying the load for ten
+      seconds out of every thirty.
+- [x] Chips render the state: filled cyan = serving, cyan outline =
+      answering and standing by, rose = not answering, dim = never asked
+      or disabled. Operator asked for blue/green/red; the locked palette
+      has neither a blue nor a green, so the two HEALTHY states share one
+      hue at two weights instead — at chip size "which of these two blues
+      is the good one" is a question nobody should have to answer.
+      Worth revisiting with them if they want literal hues added to
+      DESIGN.md.
+
 ## Open — from this rework
 
 - [ ] `TraderProfile` is still mutable and handed out live by the
