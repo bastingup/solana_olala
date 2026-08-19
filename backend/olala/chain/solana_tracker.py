@@ -47,7 +47,8 @@ class SolanaTrackerClient:
                     min_trades: int = 20, min_active_days: int = 0,
                     sort: str = "win_percentage",
                     max_trades_per_day: float | None = None,
-                    max_pages: int = 1) -> list[dict[str, Any]]:
+                    max_pages: int = 1, min_roi_pct: float = 0.0,
+                    min_win_rate_pct: float = 0.0) -> list[dict[str, Any]]:
         """Top wallets ranked by ``sort`` (``win_percentage``,
         ``realized`` PnL, or ``trades``), paginated until ``limit``
         KEEPERS are collected or ``max_pages`` is spent.
@@ -77,6 +78,13 @@ class SolanaTrackerClient:
         }
         if min_active_days > 0:
             params["minDays"] = min_active_days
+        # Quality floors, in the percent units the API expects. minRoi is
+        # the one that matters most: it demands return on capital, which
+        # volume machines cannot fake.
+        if min_roi_pct > 0:
+            params["minRoi"] = min_roi_pct
+        if min_win_rate_pct > 0:
+            params["minWinRate"] = min_win_rate_pct
 
         keepers: list[dict[str, Any]] = []
         cursor: str | None = None

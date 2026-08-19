@@ -96,3 +96,16 @@ def test_first_page_failure_raises_later_pages_tolerated():
 
     rows = client.top_traders(max_trades_per_day=600, max_pages=3, limit=100)
     assert len(rows) == 40      # partial result, not an exception
+
+
+def test_quality_floors_are_sent_only_when_set():
+    client, session = client_with([([wallet(1)], None)])
+    client.top_traders(min_roi_pct=100.0, min_win_rate_pct=55.0)
+    sent = session.requests[0]
+    assert sent["minRoi"] == 100.0
+    assert sent["minWinRate"] == 55.0
+
+    client, session = client_with([([wallet(1)], None)])
+    client.top_traders()          # zero = disabled, must not be sent
+    assert "minRoi" not in session.requests[0]
+    assert "minWinRate" not in session.requests[0]

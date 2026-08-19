@@ -1,6 +1,6 @@
 import time
 
-from olala.config import FilterConfig
+from olala.config import OnChainFilters
 from olala.discovery.filters import TraderAdmissionFilter
 from olala.domain.models import ObservedTrade, TraderStats, TradeSide
 
@@ -28,7 +28,7 @@ def trades_for(mint="m1", count=3):
 def evaluate(stats, market=None, trades=None):
     market = market or FakeMarketData({"m1": make_token(mint="m1")})
     filt = TraderAdmissionFilter(market)
-    return filt.evaluate(FilterConfig(), stats, trades or trades_for())
+    return filt.evaluate(OnChainFilters(), stats, trades or trades_for())
 
 
 def test_good_trader_passes():

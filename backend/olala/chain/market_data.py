@@ -21,7 +21,14 @@ logger = logging.getLogger(__name__)
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
 SOL_MINT = "So11111111111111111111111111111111111111112"
-CACHE_TTL_SEC = 45.0
+# Screening and browsing tolerate a stale-ish price; EXECUTION does not.
+# A 45s-old mark on a fast-moving token silently flatters or punishes
+# every simulated fill, which would make paper results meaningless for
+# fast strategies — so fills re-price with `max_age` near zero.
+CACHE_TTL_SEC = 10.0
+# DexScreener is keyless and NOT metered against the RPC budget, so
+# fresh pricing costs nothing but politeness.
+FILL_PRICE_MAX_AGE_SEC = 1.0
 
 
 class MarketDataService:
@@ -31,11 +38,17 @@ class MarketDataService:
         self._cache: dict[str, tuple[float, TokenInfo | None]] = {}
         self._lock = threading.Lock()
 
-    def get_token_info(self, mint: str) -> TokenInfo | None:
-        """Best (deepest SOL-quoted) pair snapshot for a token, cached."""
+    def get_token_info(self, mint: str,
+                       max_age: float = CACHE_TTL_SEC) -> TokenInfo | None:
+        """Best (deepest SOL-quoted) pair snapshot for a token.
+
+        ``max_age`` caps how stale a cached entry may be; pass a small
+        value (see :data:`FILL_PRICE_MAX_AGE_SEC`) when the price is
+        about to become an execution price.
+        """
         with self._lock:
             cached = self._cache.get(mint)
-            if cached and time.time() - cached[0] < CACHE_TTL_SEC:
+            if cached and time.time() - cached[0] < max_age:
                 return cached[1]
         info = self._fetch_token_info(mint)
         with self._lock:

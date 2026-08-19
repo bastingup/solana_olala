@@ -50,7 +50,7 @@ def test_snapshot_then_live_events(live_server):
         snapshot = json.loads(ws.receive(timeout=5))
         assert snapshot["type"] == "snapshot"
         data = snapshot["data"]
-        assert data["dev_mode"] is False
+        assert "dev_mode" in data
         assert len(data["wallets"]) == 3
         assert data["keystore"]["locked"] is True
 

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from olala.config import FilterConfig
+from olala.config import OnChainFilters
 from olala.discovery.scanner import RpcBudget
 from olala.discovery.scoring import TraderScorer
 from olala.domain.models import ObservedTrade, TraderStatus, TradeSide
@@ -87,7 +87,7 @@ def test_sharpe_needs_enough_trades():
 def test_filter_judges_skill_inside_window_history_outside():
     """An old wallet whose recent window is strong passes even though the
     windowed history span is shorter than min_history_days."""
-    config = FilterConfig(min_history_days=90, min_trades=10,
+    config = OnChainFilters(min_history_days=90, min_trades=10,
                           min_win_rate=0.6, min_sharpe=0.0)
     window_trades = [t for i in range(25)
                      for t in round_trip(0.02 + i * 1.5, win=(i % 4 != 0))]
@@ -111,7 +111,7 @@ def test_filter_judges_skill_inside_window_history_outside():
 
 
 def test_erratic_returns_rejected_by_sharpe_gate():
-    config = FilterConfig(min_trades=10, min_win_rate=0.3, min_sharpe=0.5)
+    config = OnChainFilters(min_trades=10, min_win_rate=0.3, min_sharpe=0.5)
     from olala.discovery.filters import TraderAdmissionFilter
     from conftest import make_token
     from fakes import FakeMarketData
@@ -147,12 +147,12 @@ def test_census_promotes_repeat_traders_only(db, bus, config_store):
     stage_program_flow(provider, programs[0], "c1", ELITE, tx)
     provider.signatures[ELITE] = human_signatures()
 
-    daemon._census_flow(config_store.config, RpcBudget(60))
+    daemon.onchain._census_flow(config_store.config, RpcBudget(60))
     # One sighting: tallied but not promoted.
     assert registry.get(ELITE) is None
     assert db.frequent_sightings(1) == [(ELITE, 1)]
 
-    daemon._census_flow(config_store.config, RpcBudget(60))
+    daemon.onchain._census_flow(config_store.config, RpcBudget(60))
     # Second sighting crosses census_min_sightings=2: promoted.
     profile = registry.get(ELITE)
     assert profile is not None

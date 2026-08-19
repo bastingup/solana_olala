@@ -11,7 +11,7 @@ import statistics
 from collections import Counter
 
 from ..chain.market_data import MarketDataService
-from ..config import FilterConfig
+from ..config import OnChainFilters
 from ..domain.models import ObservedTrade, TraderStats
 
 TOKEN_SAMPLE_SIZE = 5
@@ -21,7 +21,7 @@ class TraderAdmissionFilter:
     def __init__(self, market_data: MarketDataService) -> None:
         self._market_data = market_data
 
-    def evaluate(self, config: FilterConfig, stats: TraderStats,
+    def evaluate(self, config: OnChainFilters, stats: TraderStats,
                  trades: list[ObservedTrade],
                  full_history_days: float | None = None) -> tuple[bool, str]:
         """``stats``/``trades`` are windowed to the skill window; the
@@ -68,7 +68,7 @@ class TraderAdmissionFilter:
             return False, reason
         return True, ""
 
-    def _token_quality(self, config: FilterConfig,
+    def _token_quality(self, config: OnChainFilters,
                        trades: list[ObservedTrade]) -> tuple[bool, str, float]:
         """Do this trader's most-traded tokens meet the market-cap band?"""
         counts = Counter(t.mint for t in trades)

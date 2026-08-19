@@ -43,12 +43,14 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 # risk, and the simulated fleet — all independent of trading style.
 MASTER_SECTIONS = ("server", "chain", "risk", "paper")
 # Sections that define a trading style and therefore live in a profile.
-PROFILE_SECTIONS = ("filters", "discovery", "follow")
+PROFILE_SECTIONS = ("filters_onchain", "filters_solanatracker",
+                    "discovery", "follow")
 
 # The leaderboard service accepts exactly these ranking fields; anything
 # else would silently fall back to a server-side default, so it is
 # rejected at load instead.
-VALID_LEADERBOARD_SORTS = ("win_percentage", "realized", "trades")
+VALID_LEADERBOARD_SORTS = ("roi", "win_percentage", "realized",
+                          "trades")
 
 
 @dataclass
@@ -73,7 +75,7 @@ class ChainConfig:
 
 
 @dataclass
-class FilterConfig:
+class OnChainFilters:
     """Trader admission thresholds. Defaults are the 'strict' preset."""
 
     min_history_days: int = 90
@@ -115,7 +117,46 @@ class RiskConfig:
 
 
 @dataclass
+class SolanaTrackerFilters:
+    """STREAM A — Solana Tracker's PnL leaderboard.
+
+    The service has already done the work: it ranks wallets and gates
+    them server-side on trade count, active days, ROI, win rate and
+    non-arbitrage. We take its output as given and follow the names it
+    returns. **The ``filters`` section does NOT apply to this stream** —
+    that governs on-chain discovery, where nobody has vetted anything
+    for us. The stream runs whenever ``chain.solana_tracker_api_key`` is
+    set — clearing that key is how you turn it off, so there is exactly
+    one switch rather than two that can disagree.
+    """
+
+    # Ranking: "roi" (return on capital — separates skill from scale),
+    # "realized" (absolute PnL — favours volume machines),
+    # "win_percentage", or "trades".
+    sort: str = "roi"
+    # Board window, and the floors pushed to the service. Percent units,
+    # matching the API and the public leaderboard's own filter UI.
+    window_days: int = 30
+    min_active_days: int = 10
+    min_trades: int = 20
+    min_roi_pct: float = 0.0
+    min_win_rate_pct: float = 0.0
+    # Pages walked per poll (100 wallets each). pages x polls/month must
+    # stay inside the service tier (free tier: 10k requests/month).
+    pages: int = 3
+    interval_sec: int = 3600
+    # NOT a quality judgment — a mechanical limit. We cannot copy, or
+    # afford, a wallet trading faster than this. 0 disables the cap.
+    max_trades_per_day: float = 2000.0
+
+
+@dataclass
 class DiscoveryConfig:
+    """STREAM B — our own on-chain discovery (DEX census + winners'
+    holders). Nobody has vetted these wallets, so they earn their seat
+    the hard way: pre-screen, full history scan, then the ``filters``
+    admission gate."""
+
     scan_interval_sec: int = 180
     max_followed_traders: int = 10
     max_candidates_per_scan: int = 120
@@ -137,23 +178,6 @@ class DiscoveryConfig:
     ])
     census_tx_sample: int = 8
     census_min_sightings: int = 2
-    # The leaderboard service is polled at most this often (seconds) so a
-    # free API tier lasts the month; between polls the on-chain sources
-    # carry the sweep. 900s ≈ 2.9k requests/month.
-    leaderboard_interval_sec: int = 900
-    # Nominations must show sustained trading: minimum active trading
-    # days inside the window. The service's own default is 3, which
-    # nominates week-old wallets that can never clear our history gate.
-    leaderboard_min_active_days: int = 30
-    # Leaderboard ranking: "win_percentage" (service win rate),
-    # "realized" (net realized PnL) or "trades" (most active). The
-    # deep-scan queue follows this order.
-    leaderboard_sort: str = "win_percentage"
-    # Pages walked per poll (100 wallets each) until enough copyable
-    # nominees are found — the board's top is dominated by ultra-HF
-    # machines our activity cap discards, so depth buys usable names.
-    # Budget: pages × polls/month must stay inside the service tier.
-    leaderboard_pages: int = 2
     # Roster replacement: a passing candidate evicts the weakest followed
     # trader only when its score clears the incumbent's by this margin —
     # hysteresis so statistical noise cannot churn the roster.
@@ -184,9 +208,16 @@ class PaperConfig:
 
 @dataclass
 class AppConfig:
-    # Dev mode: bypass the trader-admission and token-safety gates so
-    # paper activity flows immediately (you will be copying bots and
-    # trash — that is the point). Live wallets refuse to arm while on.
+    # THE FILTER SWITCH — note the direction, it is deliberately the
+    # opposite of the usual "dev mode means relaxed":
+    #     dev_mode: true   -> APPLY every on-chain filter (strict)
+    #     dev_mode: false  -> IGNORE them (follow what discovery finds)
+    # It governs `filters_onchain` only: the pre-screen, scan depth and
+    # the admission gate for STREAM B. It never touches the Solana
+    # Tracker stream (that stream is vetted upstream and configured by
+    # `filters_solanatracker`), and it can never expose live money to an
+    # unscreened token — the safety screen is unconditional for live
+    # wallets no matter how this is set.
     dev_mode: bool = False
     # Trading profile selector: True loads config.hft.yaml (chase
     # high-frequency traders), False loads config.slow.yaml (slow/swing
@@ -195,13 +226,17 @@ class AppConfig:
     hft: bool = False
     server: ServerConfig = field(default_factory=ServerConfig)
     chain: ChainConfig = field(default_factory=ChainConfig)
-    filters: FilterConfig = field(default_factory=FilterConfig)
+    filters_onchain: OnChainFilters = field(
+        default_factory=OnChainFilters)
+    filters_solanatracker: SolanaTrackerFilters = field(
+        default_factory=SolanaTrackerFilters)
     risk: RiskConfig = field(default_factory=RiskConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     follow: FollowConfig = field(default_factory=FollowConfig)
     paper: PaperConfig = field(default_factory=PaperConfig)
 
-    _MUTABLE_SECTIONS = ("filters", "risk", "discovery", "follow")
+    _MUTABLE_SECTIONS = ("filters_onchain", "filters_solanatracker",
+                         "risk", "discovery", "follow")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -314,8 +349,8 @@ def _apply(config: AppConfig, raw: dict[str, Any],
 
 
 def _validate(config: AppConfig) -> None:
-    if config.discovery.leaderboard_sort not in VALID_LEADERBOARD_SORTS:
+    sort = config.filters_solanatracker.sort
+    if sort not in VALID_LEADERBOARD_SORTS:
         raise ValueError(
-            f"discovery.leaderboard_sort must be one of "
-            f"{VALID_LEADERBOARD_SORTS}, got "
-            f"{config.discovery.leaderboard_sort!r}")
+            f"filters_solanatracker.sort must be one of "
+            f"{VALID_LEADERBOARD_SORTS}, got {sort!r}")

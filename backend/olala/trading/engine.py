@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from ..chain.jupiter import JupiterError
-from ..chain.market_data import MarketDataService
+from ..chain.market_data import FILL_PRICE_MAX_AGE_SEC, MarketDataService
 from ..chain.provider import ChainError
 from ..config import ConfigStore
 from ..domain.models import (CopySignal, ExitReason, Position, TokenInfo,
@@ -95,8 +95,13 @@ class TradingEngine:
         if token is None:
             self._reject(signal, wallet, "no market data for token")
             return
-        if not config.dev_mode:
-            report = self._safety.check(token, config.filters, config.risk)
+        # Token safety follows the filter switch for PAPER wallets, so
+        # simulation can run wide open — but it is UNCONDITIONAL for a
+        # live wallet: real money is never exposed to a honeypot because
+        # a filter flag was off.
+        if config.dev_mode or not wallet.is_paper:
+            report = self._safety.check(
+                token, config.filters_onchain, config.risk)
             if not report.safe:
                 self._reject(signal, wallet, f"safety: {report.reason}")
                 return
@@ -107,6 +112,10 @@ class TradingEngine:
         if not verdict.approved:
             self._reject(signal, wallet, verdict.reason)
             return
+        # Re-price immediately before filling: a cached mark is fine for
+        # gating, but a stale one as the FILL price would quietly falsify
+        # every paper result on fast-moving tokens.
+        token = self._fresh(token)
         fill = self._executor_for(wallet).buy(wallet, token, verdict.size_sol)
         position = self._portfolio.apply_buy(
             wallet, signal.trader, token, fill)
@@ -138,7 +147,9 @@ class TradingEngine:
             return False
         if not self._portfolio.begin_close(position):
             return False  # Another thread already owns this close.
-        token = self._market_data.get_token_info(position.mint)
+        # Exits price at the market too — see _handle_buy.
+        token = self._market_data.get_token_info(
+            position.mint, max_age=FILL_PRICE_MAX_AGE_SEC)
         if token is None:
             # Market data outage: exit anyway at the last known mark with
             # worst-case modeled slippage rather than stay unmanaged.
@@ -165,6 +176,13 @@ class TradingEngine:
             "sol_amount": fill.sol_amount, "reason": reason.value,
             "trader": position.trader})
         return True
+
+    def _fresh(self, token: TokenInfo) -> TokenInfo:
+        """Re-read the mark right before it becomes a fill price; keep
+        the gating snapshot if the refresh is unavailable."""
+        latest = self._market_data.get_token_info(
+            token.mint, max_age=FILL_PRICE_MAX_AGE_SEC)
+        return latest if latest is not None else token
 
     def _reject(self, signal: CopySignal, wallet: Wallet,
                 reason: str) -> None:

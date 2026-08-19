@@ -72,11 +72,6 @@ def build_rest_blueprint(app_context) -> Blueprint:
                                      "there is nothing to arm"}), 400
         if armed:
             # Arming needs a signer; disarming must always be possible.
-            if ctx.store.config.dev_mode:
-                return jsonify({"error": "dev mode is on — arming live "
-                                         "wallets is locked out because "
-                                         "dev configs relax the safety "
-                                         "screens"}), 400
             if ctx.keystore.is_locked:
                 return jsonify({"error": "unlock the keystore first"}), 400
             try:

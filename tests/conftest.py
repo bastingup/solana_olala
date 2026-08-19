@@ -19,7 +19,11 @@ from olala.persistence.database import Database  # noqa: E402
 
 @pytest.fixture
 def config_store(tmp_path) -> ConfigStore:
-    return ConfigStore(path=tmp_path / "config.yaml")
+    """Filters APPLIED (dev_mode: true) — the strict pipeline is what
+    most tests are asserting against."""
+    path = tmp_path / "config.yaml"
+    path.write_text("dev_mode: true\n")
+    return ConfigStore(path=path)
 
 
 @pytest.fixture

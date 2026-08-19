@@ -82,7 +82,8 @@ class FakeTracker:
 
     def top_traders(self, window_days=90, limit=100, min_trades=20,
                     min_active_days=0, sort="win_percentage",
-                    max_trades_per_day=None, max_pages=1):
+                    max_trades_per_day=None, max_pages=1,
+                    min_roi_pct=0.0, min_win_rate_pct=0.0):
         self.calls += 1
         if self.fail:
             from olala.chain.solana_tracker import SolanaTrackerError
@@ -114,7 +115,8 @@ class FakeMarketData:
     def __init__(self, tokens: dict[str, TokenInfo] | None = None) -> None:
         self.tokens = tokens or {}
 
-    def get_token_info(self, mint: str) -> TokenInfo | None:
+    def get_token_info(self, mint: str,
+                       max_age: float | None = None) -> TokenInfo | None:
         return self.tokens.get(mint)
 
     def search_winners(self, min_liquidity_usd, min_change_pct, limit=8):

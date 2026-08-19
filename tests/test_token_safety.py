@@ -1,4 +1,4 @@
-from olala.config import FilterConfig, RiskConfig
+from olala.config import OnChainFilters, RiskConfig
 from olala.risk.token_safety import TokenSafetyScreen
 
 from conftest import make_token
@@ -18,7 +18,7 @@ def clean_provider(mint="MintA111", supply=1_000_000.0):
 
 def check(provider, token=None):
     screen = TokenSafetyScreen(provider)
-    return screen.check(token or make_token(), FilterConfig(), RiskConfig())
+    return screen.check(token or make_token(), OnChainFilters(), RiskConfig())
 
 
 def test_clean_token_passes():
@@ -77,8 +77,8 @@ def test_result_cached_per_mint():
     provider = clean_provider()
     screen = TokenSafetyScreen(provider)
     token = make_token()
-    assert screen.check(token, FilterConfig(), RiskConfig()).safe
+    assert screen.check(token, OnChainFilters(), RiskConfig()).safe
     # Poison the provider: cached verdict should still be served.
     provider.account_info["MintA111"]["data"]["parsed"]["info"][
         "mintAuthority"] = "Auth"
-    assert screen.check(token, FilterConfig(), RiskConfig()).safe
+    assert screen.check(token, OnChainFilters(), RiskConfig()).safe

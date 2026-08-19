@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 
 from ..chain.provider import ChainError, RpcProvider
-from ..config import FilterConfig, RiskConfig
+from ..config import OnChainFilters, RiskConfig
 from ..domain.models import TokenInfo
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class TokenSafetyScreen:
         self._provider = provider
         self._cache: dict[str, tuple[float, SafetyReport]] = {}
 
-    def check(self, token: TokenInfo, filters: FilterConfig,
+    def check(self, token: TokenInfo, filters: OnChainFilters,
               risk: RiskConfig) -> SafetyReport:
         # Market-shape checks are cheap and use fresh data — always run.
         if token.liquidity_usd < filters.min_token_liquidity_usd:

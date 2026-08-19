@@ -35,12 +35,14 @@ export function renderCommand(state, totals) {
     badge.dataset.mode = "unknown";
     badge.textContent = "…";
     badge.title = "Waiting for the backend snapshot.";
-  } else if (state.devMode) {
+  } else if (!state.devMode) {
+    // The filter switch is off: on-chain discovery follows what it
+    // finds without applying the admission gates. Worth stating.
     badge.hidden = false;
     badge.dataset.mode = "dev";
-    badge.textContent = "DEV";
-    badge.title = "Dev mode: relaxed gates for testing. "
-      + "Arming live wallets is locked out.";
+    badge.textContent = "NO FILTERS";
+    badge.title = "dev_mode: false — on-chain filters are ignored. "
+      + "Live wallets still get the token safety screen.";
   } else if (state.profile === "hft") {
     // The high-frequency profile chases fast traders whose edge may not
     // survive copy latency — worth stating, not hiding.

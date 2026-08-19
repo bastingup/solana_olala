@@ -3,8 +3,8 @@ copyability scoring."""
 
 import time
 
-from olala.discovery.scanner import (PRESCREEN_SIGNATURES, RpcBudget,
-                                     TraderDiscoveryDaemon)
+from olala.discovery.onchain import PRESCREEN_SIGNATURES
+from olala.discovery.scanner import RpcBudget, TraderDiscoveryDaemon
 from olala.discovery.scoring import TraderScorer
 from olala.domain.models import ObservedTrade, TraderStatus, TradeSide
 from olala.services.traders import TraderRegistry
@@ -76,24 +76,26 @@ def stage_winner_holders(provider, holders, supply=1_000_000.0):
         {acct: owner for acct, owner, _ in holders})
 
 
-def test_leaderboard_candidates_admitted_to_review(db, bus, config_store):
-    tracker = FakeTracker(traders=[{"address": ELITE, "win_rate": 0.7}])
+def test_leaderboard_names_are_followed_not_queued(db, bus, config_store):
+    """Stream A trusts the service: its names skip review entirely."""
+    tracker = FakeTracker(traders=[
+        {"address": ELITE, "win_rate": 0.7, "trade_count": 300,
+         "trades_per_day": 12.0}])
     provider, registry, daemon = make_daemon(db, bus, config_store,
                                              tracker=tracker)
-    provider.signatures[ELITE] = human_signatures()
     daemon._harvest_candidates(config_store.config, RpcBudget(30))
     profile = registry.get(ELITE)
     assert profile is not None
-    assert profile.status is TraderStatus.CANDIDATE
+    assert profile.status is TraderStatus.FOLLOWED
     assert tracker.calls == 1
+    assert provider.signature_reads_for(ELITE) == 0
 
 
 def test_pre_screen_rejects_machine_frequency_wallet(db, bus, config_store):
-    tracker = FakeTracker(traders=[{"address": BOT, "win_rate": 0.99}])
-    provider, registry, daemon = make_daemon(db, bus, config_store,
-                                             tracker=tracker)
+    """On-chain stream: nobody vetted this wallet, so we screen it."""
+    provider, registry, daemon = make_daemon(db, bus, config_store)
     provider.signatures[BOT] = bot_signatures()
-    daemon._harvest_candidates(config_store.config, RpcBudget(30))
+    daemon.onchain._pre_screen(config_store.config, BOT, RpcBudget(30))
     profile = registry.get(BOT)
     assert profile is not None
     assert profile.status is TraderStatus.REJECTED
@@ -112,7 +114,7 @@ def test_winner_holders_become_candidates(db, bus, config_store):
     assert profile.status is TraderStatus.CANDIDATE
     assert daemon._counters["winners_mined"] == 1
     assert daemon._counters["smart_holders"] == 1
-    assert WINNER_MINT in daemon._early_hits[ONCURVE_HOLDER]
+    assert WINNER_MINT in daemon.onchain.early_hits[ONCURVE_HOLDER]
 
 
 def test_winner_below_thresholds_ignored(db, bus, config_store):
@@ -165,11 +167,11 @@ def test_multi_winner_wallets_scanned_first(db, bus, config_store):
     other = "OtherTraderCCCC1111111111111111111111111111"
     registry.add_candidate(other)
     registry.add_candidate(ELITE)
-    daemon._early_hits[ELITE] = {"m1", "m2"}
-    daemon._early_hits[other] = {"m1"}
+    daemon.onchain.early_hits[ELITE] = {"m1", "m2"}
+    daemon.onchain.early_hits[other] = {"m1"}
     ordered = registry.by_status(TraderStatus.CANDIDATE)
     ordered.sort(key=lambda p: (
-        -len(daemon._early_hits.get(p.address, ())), p.discovered_at))
+        -len(daemon.onchain.early_hits.get(p.address, ())), p.discovered_at))
     assert ordered[0].address == ELITE
 
 
@@ -178,7 +180,7 @@ def test_thin_wallet_rejected_before_history_scan(db, bus, config_store):
     qualify by arithmetic — it must never consume a history scan."""
     provider, registry, daemon = make_daemon(db, bus, config_store)
     provider.signatures[ELITE] = human_signatures(count=12)
-    assert daemon._pre_screen(config_store.config, ELITE,
+    assert daemon.onchain._pre_screen(config_store.config, ELITE,
                               RpcBudget(5)) is False
     profile = registry.get(ELITE)
     assert profile.status is TraderStatus.REJECTED
@@ -231,7 +233,7 @@ def test_status_is_retained_for_late_connecting_clients(db, bus,
     status = daemon.last_status
     assert status is not None
     assert status["phase"] == "sweep_done"
-    assert status["source"] == "Winners' holders"
+    assert status["source"] == "On-chain (census + winners)"
     assert status["next_sweep_at"] > 0
     assert set(status["counters"]) == {
         "census_seen", "census_promoted", "wallets_screened",
@@ -240,11 +242,9 @@ def test_status_is_retained_for_late_connecting_clients(db, bus,
 
 
 def test_bot_block_increments_counter(db, bus, config_store):
-    tracker = FakeTracker(traders=[{"address": BOT, "win_rate": 0.5}])
-    provider, registry, daemon = make_daemon(db, bus, config_store,
-                                             tracker=tracker)
+    provider, registry, daemon = make_daemon(db, bus, config_store)
     provider.signatures[BOT] = bot_signatures()
-    daemon._harvest_candidates(config_store.config, RpcBudget(30))
+    daemon.onchain._pre_screen(config_store.config, BOT, RpcBudget(30))
     assert daemon._counters["bots_blocked"] == 1
     assert daemon._counters["wallets_screened"] == 1
 
@@ -256,5 +256,5 @@ def test_strongest_winner_mined_first(db, bus, config_store):
     strong = winner_token(change=90.0)
     provider, registry, daemon = make_daemon(
         db, bus, config_store, jupiter=FakeJupiterTokens([weak, strong]))
-    winners = daemon._find_winner_tokens(config_store.config)
+    winners = daemon.onchain._find_winner_tokens(config_store.config)
     assert winners[0]["symbol"] == "WINR"

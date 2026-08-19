@@ -73,14 +73,17 @@ def test_api_keys_never_reach_logs():
 
 # -- dev mode --------------------------------------------------------------
 
-def test_dev_mode_survives_load(tmp_path):
+def test_filter_switch_survives_load(tmp_path):
     path = tmp_path / "dev.yaml"
-    path.write_text("dev_mode: true\n")
+    path.write_text("dev_mode: false\n")
     store = ConfigStore(path=path)
-    assert store.config.dev_mode is True
+    assert store.config.dev_mode is False
 
 
-def test_dev_mode_blocks_arming_at_the_api(tmp_path):
+def test_arming_is_independent_of_the_filter_switch(tmp_path):
+    """The filter switch governs on-chain admission, nothing else.
+    Arming is gated by the keystore alone — and live wallets get the
+    token safety screen regardless of how the switch is set."""
     from solders.keypair import Keypair
 
     from olala.api.server import AppContext, build_app
@@ -89,7 +92,7 @@ def test_dev_mode_blocks_arming_at_the_api(tmp_path):
     from fakes import FakeMarketData, FakeProvider
 
     path = tmp_path / "dev.yaml"
-    path.write_text("dev_mode: true\n")
+    path.write_text("dev_mode: false\n")
     ctx = AppContext(
         config_store=ConfigStore(path=path),
         database=Database(path=tmp_path / "dev.db"),
@@ -99,39 +102,34 @@ def test_dev_mode_blocks_arming_at_the_api(tmp_path):
     app.testing = True
     client = app.test_client()
 
-    assert client.get("/api/state").get_json()["dev_mode"] is True
-    # Even fully set up — keystore unlocked, live wallet present — dev
-    # mode refuses to arm the wallet.
+    assert client.get("/api/state").get_json()["dev_mode"] is False
     client.post("/api/keystore/unlock", json={"passphrase": "pw"})
     wallet = client.post("/api/wallets", json={
         "label": "V", "secret": str(Keypair())}).get_json()
-    response = client.post(f"/api/wallets/{wallet['id']}/arm",
-                           json={"armed": True})
-    assert response.status_code == 400
-    assert "dev mode" in response.get_json()["error"]
-    # Disarming stays allowed even in dev mode.
-    assert client.post(f"/api/wallets/{wallet['id']}/arm",
-                       json={"armed": False}).status_code == 200
 
+    armed = client.post(f"/api/wallets/{wallet['id']}/arm",
+                        json={"armed": True})
+    assert armed.status_code == 200
+    assert armed.get_json()["armed"] is True
 
-def test_dev_mode_bypasses_pre_screen(tmp_path, db, bus):
-    """Dev mode welcomes bots: the pre-screen never rejects."""
+def test_filters_off_bypasses_pre_screen(tmp_path, db, bus):
+    """dev_mode: false ignores filters — the pre-screen never rejects."""
     path = tmp_path / "dev.yaml"
-    path.write_text("dev_mode: true\n")
+    path.write_text("dev_mode: false\n")
     store = ConfigStore(path=path)
     from olala.discovery.scanner import RpcBudget
     from test_discovery_v2 import BOT, bot_signatures, make_daemon
     provider, registry, daemon = make_daemon(db, bus, store)
     provider.signatures[BOT] = bot_signatures()
-    assert daemon._pre_screen(store.config, BOT, RpcBudget(5)) is True
+    assert daemon.onchain._pre_screen(store.config, BOT, RpcBudget(5)) is True
 
 
-def test_dev_mode_admits_anyone_with_trades(tmp_path, db, bus):
+def test_filters_off_admits_anyone_with_trades(tmp_path, db, bus):
     """Dev mode bypasses every admission gate: one observed swap in the
     window is enough to be followed."""
     import time
     path = tmp_path / "dev.yaml"
-    path.write_text("dev_mode: true\n")
+    path.write_text("dev_mode: false\n")
     store = ConfigStore(path=path)
     from olala.discovery.scanner import RpcBudget
     from olala.domain.models import ObservedTrade, TradeSide, TraderStatus
@@ -148,11 +146,11 @@ def test_dev_mode_admits_anyone_with_trades(tmp_path, db, bus):
     assert registry.get(ELITE).status is TraderStatus.FOLLOWED
 
 
-def test_dev_mode_skips_token_safety(tmp_path, db, bus, token):
+def test_filters_off_skips_token_safety_for_paper(tmp_path, db, bus, token):
     """A signal on a token the safety screen would refuse still executes
     a paper fill in dev mode."""
     path = tmp_path / "dev.yaml"
-    path.write_text("dev_mode: true\n")
+    path.write_text("dev_mode: false\n")
     store = ConfigStore(path=path)
     from olala.domain.models import TradeSide, TraderProfile, TraderStatus
     from olala.risk.engine import RiskEngine

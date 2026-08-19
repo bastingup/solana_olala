@@ -3,6 +3,180 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — filter switch inverted + sections renamed (2026-08-18)
+
+- [x] **`dev_mode` now means the OPPOSITE of the convention** (operator
+      spec, deliberate): `true` = APPLY every `filters_onchain` gate;
+      `false` = IGNORE them. It governs the ON-CHAIN stream only —
+      pre-screen, scan depth, admission. Documented loudly in the config
+      and in code, because the name reads backwards to a newcomer.
+- [x] **Renamed** `filters:` -> `filters_onchain:` and `leaderboard:` ->
+      `filters_solanatracker:` (classes `OnChainFilters` /
+      `SolanaTrackerFilters`) so a section's name says which stream it
+      governs.
+- [x] **Two decouplings the inversion forced, both safety-positive:**
+      (1) the token safety screen now follows the switch for PAPER
+      wallets but is UNCONDITIONAL for live ones — real money is never
+      exposed to a honeypot because a filter flag was off;
+      (2) the dev-mode live-arming lockout is GONE — its rationale
+      ("dev configs relax the safety screens") no longer holds, and
+      under the new meaning it would have blocked arming in the STRICT
+      mode. Arming is gated by the keystore alone, as it should be.
+
+## Done — post-refactor bug scan (2026-08-18)
+
+Scanned the two new stream modules, the roster, and the daemon:
+
+- [x] **Roster could shrink.** `claim_seat` EVICTS the weakest to make
+      room, but `LeaderboardSource._follow` called it BEFORE
+      `add_candidate`, so a failed add left a seat evicted and unfilled.
+      Reordered: register first, and reject cleanly if the seat is lost.
+- [x] **`max_followed_traders: 0` crashed the sweep** — `min()` over an
+      empty roster raised ValueError. Guarded.
+- [x] **Silent dead seat.** A trader followed while `assign_wallet()`
+      returned "" (no wallets registered) occupies a seat and can never
+      trade; the engine drops its signals with no explanation. Now logs
+      a warning naming the trader.
+- [x] **Progress bar lied.** `candidate_progress.target_days` used
+      `min_history_days` while `_has_enough_depth` requires
+      `max(min_history_days, skill_window_days) * 1.1` — the bar read
+      100% while the scan kept running. Target now matches the gate.
+- [x] **Fall-through hid a real bug.** A missed rename
+      (`config.leaderboard` in leaderboard.py) raised AttributeError,
+      which the broad `except Exception` logged as a routine "service
+      unavailable". Fall-through stays unconditional, but a non-
+      `SolanaTrackerError` now logs a full traceback via
+      `logger.exception` — resilient AND diagnosable.
+- [x] 229 tests green (4 new regression pins). Live run confirms the
+      pipeline end to end: 3/3 seated from the ROI board, 0 RPC.
+
+## Done — two-stream modularization (2026-08-18)
+
+- [x] **Operator decision: the streams are separate, and so are their
+      rules.** Stream A (`discovery/leaderboard.py`) takes the service's
+      ROI-ranked output as given. Stream B (`discovery/onchain.py`,
+      census + winners + pre-screen) does the work itself, and the
+      `filters` section is ITS admission gate. `discovery/roster.py`
+      holds the seat competition both streams share.
+- [x] **Config mirrors the split:** new `leaderboard:` profile section
+      (enabled, sort, window_days, min_active_days, min_trades,
+      min_roi_pct, min_win_rate_pct, pages, interval_sec,
+      max_trades_per_day). All `leaderboard_*` keys, `trust_leaderboard`
+      and `enabled` are GONE — stream A follows directly by definition,
+      and the API KEY is its only on/off switch (one switch, not two
+      that can disagree).
+      `filters` no longer leaks into the service request (it was
+      sending `filters.min_trades`, coupling the two streams).
+- [x] The one limit kept on stream A is `leaderboard.max_trades_per_day`
+      — mechanical, not quality: the speed past which we can neither
+      copy nor afford a trader. Applied in the client from payload data.
+- [x] **Fall-through verified four ways** (parametrised test + live
+      run): service raises, no API key, stream disabled, stream
+      throttled — on-chain harvest runs every sweep in all four. An
+      external service can slow discovery, never stop it.
+- [x] scanner.py 754 -> ~380 lines (orchestration + deep scan +
+      admission). 224 tests green; stream tests live in
+      `tests/test_streams.py`, roster tests in
+      `test_leaderboard_replacement.py`.
+- [x] Live check: stream A seated 3/3 traders (scores 1.00/0.99/0.98,
+      68-553 trades) with zero RPC; both fall-through cases confirmed.
+
+## Done — trust the service + burst-rate bug (2026-08-18)
+
+- [x] **Pre-screen rate bug, found by auditing our own code against the
+      API.** The probe fetched only 30 signatures and computed
+      `count / span`, which measures the most recent BURST, not the
+      sustained pace. Audited 18 real nominees: `2sqG7wVVg` read
+      **1,284 sigs/day at 30 signatures vs 42/day at 500** — 30x over,
+      rejected as a machine despite the service reporting 18 trades/day.
+      Fix: always probe `PRESCREEN_MAX_FETCH` (1,000). Costs the SAME
+      single credit — the shallow probe bought nothing.
+      (A span guard was tried and removed: 250 signatures in 4 minutes
+      IS a machine, and the deep probe alone fixes the burst case.)
+- [x] **Operator decision — `trust_leaderboard: true` (both profiles).**
+      "If the leaderboard sends us great traders vetted on Solana
+      Tracker's side, re-filtering just drops viable traders." Correct:
+      the service gates on trade count, active days, ROI, win rate and
+      non-arbitrage, then our deep scan re-judged the same wallets with
+      a 7-day window and a reconstructor blind to multi-hop swaps.
+      Nominees are now FOLLOWED directly — no pre-screen, no deep scan.
+      Seat competition and `replace_margin` still apply; stats/score come
+      from the service payload (overwritten if we ever scan them).
+      **This REVISES the standing "judgment is only our own win rate"
+      doctrine — recorded in [[Claude]].**
+- [x] Verified on the real production path (real config, real API, real
+      registry): **roster filled to 3/3 in ONE sweep, 0 RPC calls
+      spent**, traders holding 513-1,719 trades. Previously: hours of
+      scanning and zero admissions.
+- [x] What still protects real money, unchanged: token safety screen
+      (mint/freeze authority, holder concentration, liquidity, pair
+      age), risk sizing (1% liquidity cap, reserve, per-position
+      ceiling), ATR panic stop, and the copyability trades/day cap
+      applied free from the payload. 226 tests green (5 new).
+
+## Done — ROI floor: the fix for "we only get bots" (2026-08-18)
+
+- [x] **Operator's observation was right, cause was elsewhere.** They
+      saw real traders on solanatracker.io/leaderboard/pnl but our API
+      calls returned 200k+ trade machines, and suspected we filtered on
+      the wrong metric. Investigated by probing the live API.
+      - NOT `minDays` (relaxing 30→5 moved humanish nominees 1→8 of 100)
+      - NOT signatures-vs-trades confusion
+      - **It was the RANKING.** `sort=realized` = ranking by absolute
+        dollars = ranking by scale. Median wallet on that board: 487,246
+        trades at 16,247/day. Only 8/100 at human cadence.
+      - `sort=win_percentage` gives 85/100 human cadence but tiny PnL.
+- [x] **Fix: push ROI + win-rate floors to the service**
+      (`leaderboard_min_roi_pct: 100`, `leaderboard_min_win_rate_pct:
+      55`, both PERCENT to match the API and the website's own filter
+      UI). ROI is the discriminator — machines earn 20–85% on huge
+      volume, real traders earn hundreds-to-thousands of percent.
+      `minWinRate` alone is useless (bots score high there too).
+      Verified end-to-end through the real client: **100/100 nominees
+      under the activity cap** (was 4/100), median 43 trades/day, PnL
+      $277k–$1.27M, top names 35–213 trades/day. Also lowered
+      `leaderboard_min_active_days` 30→10: on a 30-day board, demanding
+      30 active days means "traded every single day", a bot trait.
+- [x] 222 tests green (3 new pins: floors reach the service, zero
+      disables them, floors present in profile configs).
+- [ ] **Tension to watch:** only 39/100 of these good nominees have a
+      SERVICE win rate ≥90%, so `filters.min_win_rate: 0.9` still gates
+      hard — and our own bag-adjusted number may read lower again.
+      If admissions stall, that is the first knob (0.55–0.6 matches the
+      quality of what the board now returns).
+
+## Done — fills price at the market (2026-08-18)
+
+- [x] **Measurement-integrity fix, required before trusting any HFT
+      paper result:** paper fills were priced from the DexScreener cache
+      (`CACHE_TTL_SEC = 45`). On a fast-moving token a 45s-old mark is
+      wildly off and biases SYSTEMATICALLY — it can make a losing fast
+      strategy look profitable. `get_token_info(mint, max_age=...)` now
+      takes a freshness bound: browsing/gating uses 10s,
+      `TradingEngine` re-reads with `FILL_PRICE_MAX_AGE_SEC = 1.0`
+      immediately before every buy AND every close. A sub-second-old
+      mark is reused (no wasted latency); anything older is refetched.
+      DexScreener is keyless and NOT metered against Helius, so this
+      costs nothing but politeness. 4 pins in `test_fill_pricing.py`.
+- [x] **Aggression tuned to what the free tier actually buys.**
+      Operator set `max_trades_per_day: 8000`; measured that at 3 seats
+      it costs 2.22M credits/month (2.2x over). Set to **2,000** — the
+      real ceiling (3 x 2,000 x 2 calls = 12k/day; total 0.99M/mo).
+      Discovery trimmed 75->60 calls/sweep and follow poll 90->120s to
+      buy that copy volume; safe because at 2,000 trades/day a trader
+      emits ~3 signatures per 120s poll, far inside the 30-signature
+      window. Max 6,000 copies/day.
+- [x] Flags set for the run: `hft: true`, `dev_mode: false` (dev mode
+      would bypass the very filters this profile is built on).
+- [ ] **WATCH:** `min_win_rate: 0.9` (operator's, targeting the ~98%
+      never-sell-losers wallets). Defensible HERE because at a 7d window
+      with 7d staleness the bag adjustment is inert, so it reads the raw
+      rate — but it is the most likely reason the roster stays empty.
+      If nothing is admitted within a few hours, lower it before
+      touching anything else. Second suspect: the reconstructor returns
+      None for multi-hop routes, so heavy router users may show too few
+      round trips for `min_round_trips: 10`.
+
 ## Done — master config + trading profiles (2026-08-18)
 
 - [x] **Operator-requested restructure:** one MASTER file plus one file

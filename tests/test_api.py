@@ -94,9 +94,9 @@ def test_legacy_mode_requests_rejected(client):
 
 def test_config_update_roundtrip_and_validation(client):
     response = client.put("/api/config", json={
-        "filters": {"min_win_rate": 0.7}})
+        "filters_onchain": {"min_win_rate": 0.7}})
     assert response.status_code == 200
-    assert response.get_json()["filters"]["min_win_rate"] == 0.7
+    assert response.get_json()["filters_onchain"]["min_win_rate"] == 0.7
     assert client.put("/api/config", json={
         "server": {"port": 1}}).status_code == 400
 

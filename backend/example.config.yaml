@@ -9,8 +9,11 @@
 # Both flags below are read at BOOT ONLY — change one, restart.
 # =====================================================================
 
-# Bypasses trader-admission and token-safety gates so paper activity
-# flows immediately. Arming live wallets is refused while this is on.
+# THE FILTER SWITCH (note the direction):
+#   true  -> APPLY every filter in `filters_onchain` (strict)
+#   false -> IGNORE them: follow what on-chain discovery finds
+# Governs the on-chain stream only; `filters_solanatracker` configures
+# the leaderboard stream. Live wallets always get the safety screen.
 dev_mode: false
 
 # Trading profile selector — see the two config.<profile>.yaml files.
