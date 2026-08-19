@@ -9,6 +9,7 @@ originates trades; it only follows signals and the panic stop.
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from ..chain.jupiter import JupiterError
 from ..chain.market_data import FILL_PRICE_MAX_AGE_SEC, MarketDataService
@@ -33,7 +34,8 @@ class TradingEngine:
                  registry: TraderRegistry, market_data: MarketDataService,
                  safety: TokenSafetyScreen, risk: RiskEngine, bus: EventBus,
                  paper_executor: TradeExecutor,
-                 live_executor: TradeExecutor) -> None:
+                 live_executor: TradeExecutor,
+                 tracking_health: Callable[[str], str] | None = None) -> None:
         self._store = store
         self._portfolio = portfolio
         self._registry = registry
@@ -43,6 +45,9 @@ class TradingEngine:
         self._bus = bus
         self._paper_executor = paper_executor
         self._live_executor = live_executor
+        # Returns a non-empty reason when a trader cannot currently be
+        # watched, which blocks ENTRIES only.
+        self._tracking_health = tracking_health
 
     def _wallet_may_trade(self, wallet: Wallet) -> bool:
         """Paper wallets always simulate; live wallets trade only while
@@ -59,6 +64,18 @@ class TradingEngine:
             # wallet to any executor.
             raise ExecutionError("live wallet is disarmed")
         return self._live_executor
+
+    def _blind_reason(self, trader: str) -> str:
+        """Why this trader may not be ENTERED right now, if so."""
+        if self._tracking_health is None:
+            return ""
+        try:
+            return self._tracking_health(trader) or ""
+        except Exception:                                   # noqa: BLE001
+            # A broken health probe must not block trading outright, but
+            # it must be loud: silently trading blind is the bad outcome.
+            logger.exception("tracking health check failed for %s", trader)
+            return ""
 
     # -- signal handling ---------------------------------------------------
 
@@ -92,6 +109,14 @@ class TradingEngine:
     def _handle_buy(self, signal: CopySignal, wallet: Wallet,
                     token: TokenInfo | None) -> None:
         config = self._store.config
+        # Entering a position we cannot watch is the one failure with no
+        # recovery: we would copy the buy and never see the sell. Exits
+        # are never gated this way — closing a position while blind is
+        # exactly what you want.
+        blind = self._blind_reason(signal.trader)
+        if blind:
+            self._reject(signal, wallet, blind)
+            return
         if token is None:
             self._reject(signal, wallet, "no market data for token")
             return

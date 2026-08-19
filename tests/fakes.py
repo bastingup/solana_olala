@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from typing import Any
 
 from olala.domain.models import TokenInfo
@@ -26,6 +28,12 @@ class FakeProvider:
         self.signature_status: dict[str, dict[str, Any]] = {}
         # Per-address call tally, so tests can prove no RPC was spent.
         self.signature_calls: dict[str, int] = {}
+
+    @contextlib.contextmanager
+    def broadcast_session(self):
+        """A single-source provider is already pinned, so this yields self
+        — the same contract RpcProvider's default gives."""
+        yield self
 
     def signature_reads_for(self, address) -> int:
         return self.signature_calls.get(address, 0)
@@ -83,7 +91,7 @@ class FakeTracker:
     def top_traders(self, window_days=90, limit=100, min_trades=20,
                     min_active_days=0, sort="win_percentage",
                     max_trades_per_day=None, max_pages=1,
-                    min_roi_pct=0.0, min_win_rate_pct=0.0):
+                    min_roi_pct=0.0, min_win_rate=0.0):
         self.calls += 1
         if self.fail:
             from olala.chain.solana_tracker import SolanaTrackerError

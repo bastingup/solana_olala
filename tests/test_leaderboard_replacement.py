@@ -124,8 +124,8 @@ def test_full_roster_keeps_sweeping(tmp_path, db, bus):
 
 def test_keyless_hunt_is_ongoing_every_tick(db, bus, config_store):
     """No API keys, dev mode off, roster full: every single tick must
-    still run the on-chain census AND the winners' hunt — discovery is
-    never one-shot and never idle."""
+    still run the winners' hunt — discovery is never one-shot and never
+    idle."""
     class CountingProvider(FakeProvider):
         def __init__(self):
             super().__init__()
@@ -157,7 +157,7 @@ def test_keyless_hunt_is_ongoing_every_tick(db, bus, config_store):
     daemon.tick()
     after_second = (provider.signature_reads, market.winner_searches)
 
-    assert after_first[0] > 0 and after_first[1] == 1
-    # The second sweep hunts again — nothing throttles the on-chain path.
-    assert after_second[0] > after_first[0]
+    # The hunt runs on every sweep — nothing throttles the on-chain path
+    # and a full roster does not stop the search for something better.
+    assert after_first[1] == 1
     assert after_second[1] == 2

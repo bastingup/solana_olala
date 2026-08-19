@@ -10,7 +10,7 @@ followed.
 Requires a free-tier API key (10k requests/month, 3 req/s). Every
 failure mode — missing entitlement, rate limit, outage, malformed body —
 raises ``SolanaTrackerError`` so the caller can fall through to the
-on-chain census and winners' holders sources.
+on-chain winners' holders source.
 """
 
 from __future__ import annotations
@@ -18,8 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import requests
-
+from .http import HttpClient, HttpError
 from .rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -30,25 +29,24 @@ TRACKER_BASE = "https://data.solanatracker.io"
 _SUPPORTED_WINDOW_DAYS = (90, 30, 7, 1)
 
 
-class SolanaTrackerError(RuntimeError):
+class SolanaTrackerError(HttpError):
     pass
 
 
 class SolanaTrackerClient:
     def __init__(self, api_key: str) -> None:
-        self._session = requests.Session()
-        self._session.headers.update({
-            "x-api-key": api_key,
-            "accept": "application/json",
-        })
-        self._limiter = RateLimiter(requests_per_second=1.0, burst=1)
+        self._http = HttpClient(
+            TRACKER_BASE, name="solanatracker",
+            error_cls=SolanaTrackerError,
+            headers={"x-api-key": api_key},
+            limiter=RateLimiter(requests_per_second=1.0, burst=1))
 
     def top_traders(self, window_days: int = 90, limit: int = 100,
                     min_trades: int = 20, min_active_days: int = 0,
                     sort: str = "win_percentage",
                     max_trades_per_day: float | None = None,
                     max_pages: int = 1, min_roi_pct: float = 0.0,
-                    min_win_rate_pct: float = 0.0) -> list[dict[str, Any]]:
+                    min_win_rate: float = 0.0) -> list[dict[str, Any]]:
         """Top wallets ranked by ``sort`` (``win_percentage``,
         ``realized`` PnL, or ``trades``), paginated until ``limit``
         KEEPERS are collected or ``max_pages`` is spent.
@@ -83,8 +81,9 @@ class SolanaTrackerClient:
         # volume machines cannot fake.
         if min_roi_pct > 0:
             params["minRoi"] = min_roi_pct
-        if min_win_rate_pct > 0:
-            params["minWinRate"] = min_win_rate_pct
+        if min_win_rate > 0:
+            # Caller speaks fractions; the API speaks percent.
+            params["minWinRate"] = min_win_rate * 100.0
 
         keepers: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -115,23 +114,21 @@ class SolanaTrackerClient:
         return keepers[:limit]
 
     def _fetch_page(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._limiter.acquire()
-        try:
-            response = self._session.get(
-                f"{TRACKER_BASE}/v2/pnl/leaderboard/top",
-                params=params, timeout=15)
-            if response.status_code in (401, 403):
-                raise SolanaTrackerError(
-                    f"leaderboard not available on this API key "
-                    f"(HTTP {response.status_code})")
-            if response.status_code == 429:
-                raise SolanaTrackerError(
-                    "rate limited by Solana Tracker (HTTP 429)")
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise SolanaTrackerError(
-                f"leaderboard fetch failed: {exc}") from exc
+        # Status handling — including feeding a 429 back to our own
+        # bucket, which this client used to skip — lives in HttpClient.
+        return self._http.get("/v2/pnl/leaderboard/top", params=params) or {}
+
+    def wallet_trades(self, wallet: str,
+                      limit: int = 100) -> list[dict[str, Any]]:
+        """Recent trades for one wallet, as the service reconstructed them.
+
+        Not used by the trading path — this is the independent second
+        opinion the tracker is reconciled against, so a missed copy shows
+        up as a discrepancy rather than as silence.
+        """
+        body = self._http.get(f"/wallet/{wallet}/trades") or {}
+        trades = body.get("trades")
+        return list(trades)[:limit] if isinstance(trades, list) else []
 
     @staticmethod
     def _parse(item: dict[str, Any]) -> dict[str, Any] | None:

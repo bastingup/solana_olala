@@ -27,7 +27,7 @@ class MarkDaemon(Daemon):
     def __init__(self, store: ConfigStore, portfolio: PortfolioManager,
                  market_data: MarketDataService, atr: AtrTracker,
                  engine: TradingEngine, bus: EventBus) -> None:
-        super().__init__("marker", store.config.follow.price_mark_interval_sec)
+        super().__init__("marker", store.config.tracking.price_mark_interval_sec)
         self._store = store
         self._portfolio = portfolio
         self._market_data = market_data

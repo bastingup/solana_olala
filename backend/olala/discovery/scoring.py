@@ -10,10 +10,15 @@ hold is measured in seconds is a bot we cannot follow.
 
 from __future__ import annotations
 
+import logging
 import statistics
+import time
 from collections import defaultdict, deque
 
+from ..constants import SECONDS_PER_DAY
 from ..domain.models import ObservedTrade, TraderStats, TradeSide
+
+logger = logging.getLogger(__name__)
 
 
 STALE_BAG_MIN_COST_SOL = 0.05
@@ -23,11 +28,24 @@ class TraderScorer:
     def compute_stats(self, address: str, trades: list[ObservedTrade],
                       stale_bag_days: float = 7.0,
                       now: float | None = None) -> TraderStats:
-        import time
         now = now if now is not None else time.time()
         stats = TraderStats(address=address)
         if not trades:
             return stats
+
+        # Every metric below is denominated in SOL. A dollar-quoted swap
+        # is a real trade — the tracker copies it, and its exits close our
+        # positions — but it has no SOL price, and inventing an exchange
+        # rate to mix it in would silently distort every win rate and PnL
+        # figure here. So it is excluded from JUDGMENT, not from copying.
+        priceable = [t for t in trades if t.sol_denominated]
+        skipped = len(trades) - len(priceable)
+        if skipped:
+            logger.debug("%s: %d of %d trades are not SOL-denominated and "
+                         "cannot be scored", address, skipped, len(trades))
+        if not priceable:
+            return stats
+        trades = priceable
 
         ordered = sorted(trades, key=lambda t: t.block_time)
         stats.first_trade_at = ordered[0].block_time
@@ -78,7 +96,7 @@ class TraderScorer:
 
         # Stale bags: unsold inventory whose lots have aged past the
         # threshold — losers never realized. Counted per mint.
-        stale_cutoff = now - stale_bag_days * 86_400.0
+        stale_cutoff = now - stale_bag_days * SECONDS_PER_DAY
         for mint, queue in lots.items():
             remaining_cost = sum(lot[0] * lot[1] for lot in queue
                                  if lot[0] > 1e-9)

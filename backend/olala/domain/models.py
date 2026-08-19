@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..constants import SECONDS_PER_DAY
+
 
 class Chain(str, Enum):
     SOLANA = "solana"
@@ -86,6 +88,22 @@ class ObservedTrade:
     sol_amount: float
     price_sol: float
     block_time: float
+    #: What the token was swapped AGAINST. Most swaps are SOL-quoted, but
+    #: plenty are denominated in USDC or USDT — and a trader who sells
+    #: into a stablecoin has still sold.
+    quote_mint: str = ""
+    #: Amount of the quote asset that moved, in its own units.
+    quote_amount: float = 0.0
+
+    @property
+    def sol_denominated(self) -> bool:
+        """Whether this trade can be valued in SOL directly.
+
+        A dollar-quoted swap has no SOL leg, so it cannot be mixed into
+        SOL-denominated PnL without an exchange rate — and inventing one
+        would silently distort every win rate we compute.
+        """
+        return self.price_sol > 0.0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -133,7 +151,7 @@ class TraderStats:
     def history_days(self) -> float:
         if not self.first_trade_at:
             return 0.0
-        return (self.last_trade_at - self.first_trade_at) / 86_400.0
+        return (self.last_trade_at - self.first_trade_at) / SECONDS_PER_DAY
 
     @property
     def trades_per_day(self) -> float:

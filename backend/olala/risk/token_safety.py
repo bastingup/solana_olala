@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 
 from ..chain.provider import ChainError, RpcProvider
+from ..constants import SECONDS_PER_DAY
 from ..config import OnChainFilters, RiskConfig
 from ..domain.models import TokenInfo
 
@@ -43,7 +44,7 @@ class TokenSafetyScreen:
             return SafetyReport(False, (
                 f"market cap ${token.market_cap_usd:,.0f} outside band"))
         if token.pair_created_at and risk.min_pair_age_days > 0:
-            age_days = (time.time() - token.pair_created_at) / 86_400.0
+            age_days = (time.time() - token.pair_created_at) / SECONDS_PER_DAY
             if age_days < risk.min_pair_age_days:
                 return SafetyReport(False, f"pair only {age_days:.1f}d old")
 

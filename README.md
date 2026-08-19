@@ -49,9 +49,13 @@ the orange ARM key with an unlocked keystore and a registered live wallet.
 
 Python (Flask + flask-sock) backend, vanilla JS + D3 frontend, SQLite
 persistence, encrypted keystore (scrypt + Fernet). Chain access is
-public-first (public RPC + DexScreener + Jupiter free tiers, no signups);
-adding a free Helius API key to the config transparently upgrades
-discovery throughput.
+public-first (public RPC + DexScreener + Jupiter free tiers, no signups)
+and ROUTED: `backend/config.yaml` lists RPC sources and an ordered
+fall-through per policy, so a throttled or broken endpoint is stepped
+over rather than taking the system down with it. Adding a free Helius
+API key enables the push stream and higher-throughput transaction
+fetches; the wallet-tracking heartbeat deliberately stays on the public
+endpoint, which is the only one that will serve roster-sized batches.
 
 ## Documentation
 

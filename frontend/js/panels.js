@@ -43,14 +43,6 @@ export function renderCommand(state, totals) {
     badge.textContent = "NO FILTERS";
     badge.title = "dev_mode: false — on-chain filters are ignored. "
       + "Live wallets still get the token safety screen.";
-  } else if (state.profile === "hft") {
-    // The high-frequency profile chases fast traders whose edge may not
-    // survive copy latency — worth stating, not hiding.
-    badge.hidden = false;
-    badge.dataset.mode = "hft";
-    badge.textContent = "HFT";
-    badge.title = "High-frequency profile (config.hft.yaml): fast "
-      + "traders, 7-day judgment window.";
   } else {
     badge.hidden = true;
   }

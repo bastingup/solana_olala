@@ -3,6 +3,242 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Done — TRACKING REWORK: measured polling, source router, HFT removed (2026-08-19)
+
+Operator brief: consistent few-second visibility on followed wallets,
+fetch separated from sweeping, "wildly intelligent fall-through"
+(LEGO bricks — pull one out, the rest still trades), sweep from Solana
+Tracker but WATCH on chain, remove HFT mode, no technical debt, then go
+bug hunting against an online source.
+
+The plan was rejected once for guessing. **Everything below was measured
+against the live endpoints first**, and the measurements changed the
+design more than once.
+
+### What was measured (probe scripts, live endpoints)
+
+| Probe | Result |
+|---|---|
+| publicnode, 50-wallet batch | 50/50 in 334 ms, in request order |
+| publicnode, batch ceiling | **100/100 in 670 ms** |
+| publicnode, 3s cadence x20 | 16/20 clean — throttles after ~40s |
+| publicnode, **5s cadence x18** | **18/18 clean**, median 469 ms, max 7.9 s |
+| publicnode, 8s cadence x11 | 11/11 clean, max 561 ms |
+| publicnode, single call | 62 ms |
+| **Helius, 50-element batch** | **HTTP 429 in 34 ms — refused outright** |
+| Helius, 10-element batch | 10/10, in order, 889 ms |
+| mainnet-beta, 50-wallet batch | 42/50 per-element 429s, **out of order** |
+
+**The invariant that set the whole design: cost = wallets ÷ interval.**
+Public nodes meter by SUB-CALL, so a 50-address batch costs 50, not 1.
+16.7/s throttles; 10/s does not.
+
+### What that forced
+
+- [x] **The interval is DERIVED, never hardcoded**:
+      `max(min_interval_sec, ceil(roster / max_wallet_calls_per_sec))`.
+      42 wallets → 5s; 100 wallets → 10s. Growing the roster widens the
+      cadence instead of silently producing 429s.
+- [x] **Two gears.** `ROUND_ROBIN` (1 wallet/tick, ~1 call/s — the
+      operator's clock, and **10x cheaper**) runs while the push stream
+      has PROVEN itself live; `BATCH` (all wallets, derived interval)
+      runs at startup, whenever the stream is unproven, and after a gap.
+      No batch-capable source → round-robin rather than blindness.
+- [x] **Helius is NOT a tracking peer.** It refuses roster-sized batches
+      and a round-robin heartbeat there would cost ~2.6M credits/month
+      against a 1M allowance. Its jobs: stream, per-trade fetches,
+      broadcast/confirm.
+- [x] Batch responses matched by JSON-RPC **id, never position** —
+      mainnet-beta was observed returning them out of order, and zipping
+      by index would attribute one wallet's trades to another.
+
+### Architecture
+
+- [x] `chain/errors.py` — error taxonomy (`SourceRateLimited`,
+      `SourceUnavailable`, `SourceRejected`, `SourceIncomplete`,
+      `SourceUnsupported`, `SourceDataError`), all subclassing
+      `ChainError` so existing handlers keep working. Throttling was
+      previously indistinguishable from breakage, which is why nothing
+      could route around it.
+- [x] `chain/sources/` — ONE config-driven `JsonRpcSource`. No class per
+      vendor: they differ only by URL, credential, rate and batching,
+      all of which are data.
+- [x] `chain/router.py` — ordered fall-through per POLICY (`tracking`,
+      `history`, `metadata`, `broadcast`, `confirm`, `stream`), circuit
+      breakers, per-(source, method) support map, metrics.
+      `SourceRejected` does NOT fail over. A source that cannot grant
+      budget in time is SKIPPED, not waited on.
+- [x] **Session pinning** — broadcast and confirmation share one source.
+      Sent on Helius and confirmed on publicnode, an honest "never seen
+      it" `null` was read as "definitively never landed": a TIMEOUT
+      receipt written while the swap was actually confirming.
+- [x] `provider.py` is now a facade — `RoutedProvider` implements the
+      old interface, so ~22 call sites did not change.
+- [x] `chain/signature_walk.py` — the never-skip/never-replay walk,
+      written ONCE (it existed twice, with different bugs).
+- [x] `trading/tracker.py` `WalletTracker` replaces `follower.py`.
+- [x] `trading/signals.py` `SignalQueue` — per-trader serialization,
+      worker pool. A 1s tick and a 100s confirmation cannot otherwise
+      coexist. Overflow drops the oldest BUY, **never a SELL**.
+- [x] `chain/subscriber.py` rewritten: uses the signature+slot already in
+      the notification (it used to throw them away and spend a call
+      rediscovering them), enqueues instead of running handlers on the
+      socket thread, keepalive, unsubscribe on unfollow, missing
+      `websocket-client` is a visible degraded state.
+
+### Cursor integrity — the replay bug
+
+- [x] **A bare signature cannot be compared.** When the poll window did
+      not contain the cursor, the follower treated EVERY entry as fresh
+      and re-executed trades it had already copied. Replaced by a
+      `(slot, signature)` watermark plus a PERSISTED processed set
+      (it was a 500-entry in-memory LRU, so a restart mid-window
+      replayed a copy).
+- [x] A window that does not reach the watermark pages back; if it still
+      cannot, that is `SourceIncomplete` and the cursor **does not
+      move**. Losing sight of trades is recoverable; copying them twice
+      is not.
+- [x] Push never advances the watermark (it arrives at `confirmed` while
+      the sweep reconciles below it); it only adds to `processed`.
+- [x] Migration: pre-slot cursors that are still visible are upgraded IN
+      PLACE (nothing lost — 24-29 of 42 on the live DB); ones no longer
+      visible are re-armed with a loud warning that the gap is not
+      copied. Counted separately, because one loses trades and one does
+      not.
+
+### Money safety
+
+- [x] **Staleness gate** — `block_time` existed and nothing checked it.
+      After an outage the backlog would buy into positions the trader
+      had already exited. Entries older than `max_signal_age_sec` are
+      refused; **exits never are**.
+- [x] **Blind policy** (operator's choice), and PER TRADER — the real
+      failure is one wallet dropping out of view while the dashboard
+      stays green. Blocks entries, never exits.
+- [x] **Portfolio no longer holds its lock across a chain read.**
+      `snapshot()` and `exposure()` both called `base_balance()` — a
+      blocking RPC for a live wallet — under the lock, so a slow node
+      stalled every buy, sell and panic stop. Balances are cached with
+      a TTL; sizing reads fresh, outside the lock.
+- [x] `getMultipleAccounts` pages instead of silently dropping every
+      holder past the hundredth.
+
+### Bug hunt — cross-checked against Solana Tracker
+
+- [x] **Dollar-quoted swaps were completely invisible.** Solana Tracker
+      reported 12 trades on a followed wallet where we reconstructed
+      ZERO: the reconstructor required the counter-asset to be SOL, so
+      every USDC/USDT-denominated swap was dropped. Missing such an
+      ENTRY is a dead seat; missing such an **EXIT means holding a token
+      the trader already sold**. Now recognised (verified on a live
+      wallet trading entirely in USDT: 0 → 7 swaps, 4 of them exits).
+      They are deliberately EXCLUDED from scoring — they have no SOL
+      price, and inventing an exchange rate would distort every win rate.
+- [x] Malformed `Retry-After` raised a bare `ValueError` out of the 429
+      path (Python 3.13 changed `parsedate_to_datetime` to raise).
+- [x] The first batch sweep could never run: a 42-cost reservation was
+      judged by the 1.5s timeout meant for single calls. The batch budget
+      wait is now derived from cost ÷ rate.
+- [x] `sources.*.api_key` would have shipped the live Helius key to every
+      connected browser through the snapshot. Redaction is now recursive
+      over the whole config, by key SHAPE, not a hand-maintained list.
+
+### Consolidation
+
+- [x] `chain/http.py` — one HTTP client. `jupiter`, `market_data` and
+      `solana_tracker` were three copies of one skeleton, and
+      solana_tracker detected 429s **without ever telling its own
+      limiter**, so it kept issuing into a wall.
+- [x] `constants.py` — `SOL_MINT`, `LAMPORTS_PER_SOL`, `SECONDS_PER_DAY`
+      (duplicated across 3, 2 and 6 modules; SOL_MINT had two names).
+- [x] `Daemon` compensates its sleep for tick duration (the period was
+      `interval + work`) and re-reads its interval each tick; overruns
+      are counted and never stacked.
+- [x] DB: WAL + `synchronous=NORMAL`, nestable `transaction()` so a
+      position and its fill commit atomically, `schema_version`, and
+      declarative added-column migrations.
+- [x] Money constants to config: Jupiter slippage, `min_order_sol`,
+      `max_position_equity_multiple`, paper fee/spread/impact.
+- [x] Dead code: `TX_CALLS_PER_CANDIDATE`, `PRESCREEN_PROBE`, unused
+      imports, 11 function-local `import time`, `RpcBudget` used as an
+      unimported annotation (moved to `discovery/budget.py` — the
+      annotation was silently invalid).
+
+### Removed
+
+- [x] **HFT mode, entirely.** `config.hft.yaml`, `config.slow.yaml`, the
+      `hft` flag, all profile machinery, the frontend HFT badge, and
+      `test_config_profiles.py`. One `config.yaml`, which the process
+      now treats as READ ONLY — runtime edits go to `config.runtime.yaml`,
+      because one `PUT /api/config` used to `yaml.safe_dump` the whole
+      file and erase every comment in it.
+- [x] **The DEX census.** It spent a fixed slice of every scan budget to
+      enumerate wallets that are merely ACTIVE — the one property a copy
+      trader can find anywhere. Winners' holders selects on having been
+      early into something that worked.
+
+### Verification
+
+- 386 tests green, pyflakes clean. New: `test_http_client`,
+  `test_sources`, `test_router`, `test_cursor`, `test_tracker`,
+  `test_signal_queue`, `test_subscriber`, `test_health_degraded`,
+  `test_config_single`. H1/H2 (never skip, never replay) ported from the
+  follower and still green through batching, gears and routing.
+- Live: 42-wallet batch sweeps against publicnode — 0 errors, 0 429s,
+  0 gaps; watermarks armed with real slots; legacy cursors upgraded in
+  place with nothing lost.
+
+## Open — from this rework
+
+- [ ] `TraderProfile` is still mutable and handed out live by the
+      registry; callers mutate it outside the lock while Flask threads
+      serialize it. Freeze it + copy-on-write registry with
+      compare-and-set. (Planned as phase 10; the portfolio hot-path and
+      cursor-write halves shipped, the freeze did not.)
+- [ ] Credit meter / budget governor for metered sources: persisted
+      monthly usage and refusal of low-priority work when projected to
+      exceed the cap. `SourceStats.metered_units` counts it today, but
+      nothing acts on the projection.
+- [ ] Budget LANES (tracking / discovery / execution draw from separate
+      buckets on the same source) — today discovery and tracking share
+      one limiter per source, so a heavy scan can still slow tracking.
+- [ ] Dollar-quoted trades are copied but not scored. A SOL/USD rate
+      would let them be judged too; decide whether that is wanted before
+      adding it (it would change every historical win rate).
+- [ ] `chain/signature_walk.py` is used by the tracker; the discovery
+      scanner still has its own walk. Point it at the shared one.
+- [ ] Rotate the Helius and Solana Tracker keys — both sat in plaintext
+      in `backend/config.yaml` throughout this work.
+
+## Fixed — win-rate unit trap (2026-08-19)
+
+- [x] **Operator report: "the win rate did not get applied."** Correct,
+      and the cause was a unit trap I built into the config. Two
+      win-rate settings, two different units:
+      `filters_onchain.min_win_rate` is a FRACTION (0.8 = 80%) while
+      `filters_solanatracker.min_win_rate_pct` was a PERCENT. The
+      operator wrote `0.7` in both, meaning 70% — the tracker read it
+      as **0.7%**, which filters nothing.
+- [x] Evidence from the DB: 42 followed traders seated in 1.9s with win
+      rates down to **20.9%, 21.8%, 24.2%** — sorted by realized PnL,
+      so high-earning low-accuracy wallets sailed through. (The roster
+      cap itself was fine: `max_followed_traders: 42` was the setting.)
+- [x] **Fix: one unit for win rate everywhere — a FRACTION**, converted
+      to percent inside the client at the wire boundary. ROI keeps the
+      explicit `_pct` suffix (real values are 100%-20000%; fractions
+      would be worse). The operator's `0.7` now means exactly what they
+      intended.
+- [x] **Validation that would have caught it instantly:** a win rate
+      outside 0..1 raises at config load with "did you mean 0.55?", and
+      an ROI percent between 0 and 1 raises with "did you mean 50?".
+      Config errors now fail at boot, not silently at runtime.
+- [x] Verified live: nominee win rates went from a 20.9% minimum to a
+      **70.0% minimum** (median 90.9%). 232 tests green (3 new pins).
+- [ ] **The 42 traders already in the DB were seated under the broken
+      filter** and keep their seats (replacement ranks by board
+      position, not win rate). Clear `backend/olala.db` for a clean
+      roster.
+
 ## Done — filter switch inverted + sections renamed (2026-08-18)
 
 - [x] **`dev_mode` now means the OPPOSITE of the convention** (operator

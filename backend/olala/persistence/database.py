@@ -7,9 +7,11 @@ objects go in and come out — SQL never leaks past this module.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -68,12 +70,14 @@ CREATE TABLE IF NOT EXISTS positions (
     exit_reason TEXT NOT NULL DEFAULT '',
     realized_pnl_sol REAL NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS sightings (
-    wallet TEXT PRIMARY KEY,
-    count INTEGER NOT NULL DEFAULT 1,
-    first_seen REAL NOT NULL,
-    last_seen REAL NOT NULL
+CREATE TABLE IF NOT EXISTS processed_signatures (
+    signature TEXT PRIMARY KEY,
+    trader TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    processed_at REAL NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_processed_trader_slot
+    ON processed_signatures(trader, slot);
 CREATE TABLE IF NOT EXISTS fills (
     order_id TEXT PRIMARY KEY,
     wallet_id TEXT NOT NULL,
@@ -109,28 +113,122 @@ CREATE INDEX IF NOT EXISTS idx_receipts_wallet
 """
 
 
+SCHEMA_VERSION = 2
+
+# Columns added after a table's original definition. Declaring them here
+# rather than as bespoke checks means a new column is one line and is
+# applied idempotently to every existing database; the previous code
+# hardcoded a single `wallets.armed` probe, so the next added column
+# would have needed its own hand-written guard.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("wallets", "armed", "INTEGER NOT NULL DEFAULT 0"),
+    # The follow cursor gained a slot: a bare signature cannot be
+    # compared, so a window that missed it used to look entirely fresh.
+    ("traders", "follow_cursor_slot", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 class Database:
     def __init__(self, path: Path = DB_PATH) -> None:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        with self._lock, self._conn:
+        self._depth = 0
+        self._configure()
+        with self._write():
             self._conn.executescript(_SCHEMA)
             self._migrate()
 
+    def _configure(self) -> None:
+        """Durability and concurrency pragmas.
+
+        WAL lets readers (the API thread serialising /api/state) run
+        while a daemon writes, which is the actual access pattern here.
+        ``synchronous=NORMAL`` is the standard companion: it trades an
+        fsync per commit for one per checkpoint, and under WAL it still
+        cannot corrupt the database — only the last commits are at risk
+        in a power loss, which for reconstructable trade history is the
+        right trade. These must run outside any transaction.
+        """
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+
     def _migrate(self) -> None:
+        self._conn.execute("CREATE TABLE IF NOT EXISTS schema_version ("
+                           "version INTEGER PRIMARY KEY,"
+                           "applied_at REAL NOT NULL)")
+        # The DEX census was removed; its ledger would otherwise linger
+        # in every existing database as a table nothing reads.
+        self._conn.execute("DROP TABLE IF EXISTS sightings")
+        for table, column, ddl in _ADDED_COLUMNS:
+            self._ensure_column(table, column, ddl)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) "
+            "VALUES (?, ?)", (SCHEMA_VERSION, time.time()))
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> bool:
+        """Add ``column`` if the table lacks it. Returns whether it was added."""
         columns = {row["name"] for row in self._conn.execute(
-            "PRAGMA table_info(wallets)")}
-        if "armed" not in columns:
-            self._conn.execute(
-                "ALTER TABLE wallets ADD COLUMN armed INTEGER NOT NULL DEFAULT 0")
+            f"PRAGMA table_info({table})")}
+        if column in columns:
+            return False
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        return True
+
+    @property
+    def schema_version(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT max(version) AS v FROM schema_version").fetchone()
+        return int(row["v"]) if row and row["v"] is not None else 0
+
+    # -- write scoping -----------------------------------------------------
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """Commit several writes as one unit, or none of them.
+
+        A position and its fill must land together: a crash between them
+        leaves a position with no record of how it was entered. Nesting
+        joins the outer transaction instead of committing early, so a
+        helper cannot half-commit its caller's work.
+        """
+        with self._lock:
+            if self._depth > 0:
+                self._depth += 1
+                try:
+                    yield self
+                finally:
+                    self._depth -= 1
+                return
+            self._depth = 1
+            try:
+                with self._conn:
+                    yield self
+            finally:
+                self._depth = 0
+
+    @contextlib.contextmanager
+    def _write(self):
+        """Lock plus a transaction scope for a single write method.
+
+        Inside an explicit :meth:`transaction` this joins it rather than
+        committing, which is what makes grouped writes atomic.
+        """
+        with self._lock:
+            if self._depth > 0:
+                yield self._conn
+            else:
+                with self._conn:
+                    yield self._conn
 
     # -- wallets -----------------------------------------------------------
 
     def upsert_wallet(self, wallet_id: str, label: str, address: str,
                       is_paper: bool, sol_balance: float,
                       armed: bool = False) -> None:
-        with self._lock, self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO wallets(id,label,address,is_paper,sol_balance,"
                 "armed) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
@@ -147,26 +245,102 @@ class Database:
     # -- traders -----------------------------------------------------------
 
     def upsert_trader(self, profile: TraderProfile, history_cursor: str = "",
-                      history_complete: bool = False,
-                      follow_cursor: str = "") -> None:
+                      history_complete: bool = False) -> None:
+        """Persist a trader's identity, status and score.
+
+        Deliberately does NOT touch `follow_cursor`/`follow_cursor_slot`.
+        Those belong to the tracker (see :meth:`update_watermarks`) and
+        used to be re-written from a registry cache on every status or
+        score change — so an ordinary discovery update silently wiped the
+        tracking watermark, and the tracker re-armed at the newest
+        signature, skipping every trade in between.
+        """
         stats_json = json.dumps(
             profile.stats.to_dict() if profile.stats else {})
-        with self._lock, self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO traders(address,status,score,rejection_reason,"
                 "assigned_wallet_id,discovered_at,stats_json,history_cursor,"
-                "history_complete,follow_cursor) VALUES(?,?,?,?,?,?,?,?,?,?) "
+                "history_complete) VALUES(?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(address) DO UPDATE SET status=excluded.status, "
                 "score=excluded.score, rejection_reason=excluded.rejection_reason, "
                 "assigned_wallet_id=excluded.assigned_wallet_id, "
                 "stats_json=excluded.stats_json, "
                 "history_cursor=excluded.history_cursor, "
-                "history_complete=excluded.history_complete, "
-                "follow_cursor=excluded.follow_cursor",
+                "history_complete=excluded.history_complete",
                 (profile.address, profile.status.value, profile.score,
                  profile.rejection_reason, profile.assigned_wallet_id,
                  profile.discovered_at, stats_json, history_cursor,
-                 int(history_complete), follow_cursor))
+                 int(history_complete)))
+
+    # -- tracking watermarks ------------------------------------------
+
+    def update_watermarks(
+            self, marks: list[tuple[str, int, str]]) -> None:
+        """Narrow, batched cursor write — the ONLY thing the tracker
+        persists per cycle.
+
+        The old path re-upserted the whole trader row for every scanned
+        signature, under the registry lock. That re-persisted whatever
+        else the in-memory object happened to hold, which could resurrect
+        a stale status, and it wrote hundreds of rows to advance a marker.
+        """
+        if not marks:
+            return
+        with self._write():
+            self._conn.executemany(
+                "UPDATE traders SET follow_cursor=?, follow_cursor_slot=? "
+                "WHERE address=?",
+                [(signature, slot, address)
+                 for address, slot, signature in marks])
+
+    def load_watermarks(self) -> dict[str, tuple[int, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT address, follow_cursor_slot, follow_cursor "
+                "FROM traders").fetchall()
+        return {r["address"]: (int(r["follow_cursor_slot"] or 0),
+                               r["follow_cursor"] or "")
+                for r in rows}
+
+    # -- processed signatures ------------------------------------------
+
+    def record_processed(self, entries: list[tuple[str, str, int]]) -> None:
+        """Remember signatures already handed to the trading engine.
+
+        PERSISTED, unlike the old 500-entry in-memory LRU: a restart in
+        the middle of a poll window used to replay whatever had not yet
+        moved the cursor, which means copying the same trade twice.
+        """
+        if not entries:
+            return
+        now = time.time()
+        with self._write():
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO processed_signatures"
+                "(signature,trader,slot,processed_at) VALUES(?,?,?,?)",
+                [(signature, trader, slot, now)
+                 for trader, signature, slot in entries])
+
+    def load_processed(self, trader: str,
+                       min_slot: int = 0) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT signature, slot FROM processed_signatures "
+                "WHERE trader=? AND slot>=?", (trader, min_slot)).fetchall()
+        return {r["signature"]: int(r["slot"]) for r in rows}
+
+    def prune_processed(self, trader: str, before_slot: int) -> int:
+        """Drop entries the watermark has moved safely past.
+
+        The watermark slot is what bounds this: anything below it is
+        settled, so keeping it only grows the table.
+        """
+        with self._write():
+            cursor = self._conn.execute(
+                "DELETE FROM processed_signatures WHERE trader=? AND slot<?",
+                (trader, before_slot))
+            return cursor.rowcount
 
     def load_traders(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -204,7 +378,7 @@ class Database:
     # -- observed trades ---------------------------------------------------
 
     def insert_observed_trades(self, trades: list[ObservedTrade]) -> None:
-        with self._lock, self._conn:
+        with self._write():
             self._conn.executemany(
                 "INSERT OR IGNORE INTO observed_trades VALUES(?,?,?,?,?,?,?,?)",
                 [(t.signature, t.trader, t.side.value, t.mint, t.token_amount,
@@ -228,33 +402,10 @@ class Database:
             price_sol=r["price_sol"], block_time=r["block_time"])
             for r in rows]
 
-    # -- census sightings --------------------------------------------------
-
-    def record_sightings(self, wallets: set[str]) -> None:
-        """Tally wallets observed trading on a DEX this sweep (one count
-        per wallet per sweep)."""
-        import time
-        now = time.time()
-        with self._lock, self._conn:
-            self._conn.executemany(
-                "INSERT INTO sightings(wallet,count,first_seen,last_seen) "
-                "VALUES(?,1,?,?) ON CONFLICT(wallet) DO UPDATE SET "
-                "count=count+1, last_seen=excluded.last_seen",
-                [(w, now, now) for w in wallets])
-
-    def frequent_sightings(self, min_count: int,
-                           limit: int = 25) -> list[tuple[str, int]]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT wallet, count FROM sightings WHERE count>=? "
-                "ORDER BY count DESC, last_seen DESC LIMIT ?",
-                (min_count, limit)).fetchall()
-        return [(r["wallet"], r["count"]) for r in rows]
-
     # -- positions ---------------------------------------------------------
 
     def save_position(self, p: Position) -> None:
-        with self._lock, self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO positions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET quantity=excluded.quantity, "
@@ -292,7 +443,7 @@ class Database:
     # -- fills -------------------------------------------------------------
 
     def save_fill(self, wallet_id: str, fill: Fill) -> None:
-        with self._lock, self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT OR IGNORE INTO fills VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (fill.order_id, wallet_id, fill.side.value, fill.mint,
@@ -309,7 +460,7 @@ class Database:
     # -- receipts ----------------------------------------------------------
 
     def save_receipt(self, receipt: Receipt) -> None:
-        with self._lock, self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT OR REPLACE INTO receipts VALUES"
                 "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

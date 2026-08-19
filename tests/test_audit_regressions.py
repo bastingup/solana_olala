@@ -4,6 +4,8 @@ Each test pins one confirmed bug: if it ever fails again, the same
 money-losing behavior is back.
 """
 
+import time
+
 import pytest
 
 from olala.domain.models import (ExitReason, TradeSide, TraderProfile,
@@ -13,8 +15,8 @@ from olala.risk.engine import RiskEngine
 from olala.services.traders import TraderRegistry
 from olala.trading.engine import TradingEngine
 from olala.trading.executor import PaperExecutor
-from olala.trading.follower import FollowDaemon
 from olala.trading.portfolio import PortfolioManager
+from olala.trading.tracker import WalletTracker
 
 from conftest import make_token
 from fakes import FakeMarketData, FakeProvider, make_swap_tx
@@ -87,71 +89,104 @@ def test_begin_close_claims_exclusively(engine_world, token):
     assert portfolio.begin_close(position) is True   # claim released
 
 
-# -- H1/H2: follower must neither skip nor replay -------------------------
+# -- H1/H2: tracking must neither skip nor replay -------------------------
+#
+# These pinned the follow daemon. The daemon is gone, replaced by
+# WalletTracker, but the CONTRACT is unchanged and must survive the new
+# gears, batching and multi-source routing.
 
-class RecordingEngine:
+class RecordingQueue:
     def __init__(self):
         self.signals = []
 
-    def handle_signal(self, sig):
+    def submit(self, sig):
         self.signals.append(sig)
+        return True
+
+
+class SingleSourceRouter:
+    """One batch-capable source that fans out to the fake provider."""
+
+    def __init__(self, provider):
+        self._provider = provider
+
+    def batch_capable(self, policy):
+        return "publicnode"
+
+    def batch(self, policy, items, timeout=None):
+        return [self._provider.get_signatures(
+            item.params[0], limit=item.params[1].get("limit", 30))
+            for item in items]
 
 
 @pytest.fixture
 def follow_world(db, bus, config_store):
+    config_store.update({"tracking": {"max_transactions_per_cycle": 10}})
     provider = FakeProvider()
+    provider.router = SingleSourceRouter(provider)
     registry = TraderRegistry(db, bus)
     registry.update(TraderProfile(address=TRADER,
                                   status=TraderStatus.FOLLOWED,
                                   assigned_wallet_id="w1"))
-    engine = RecordingEngine()
-    daemon = FollowDaemon(config_store, provider, registry, engine)
-    return provider, registry, engine, daemon
+    queue = RecordingQueue()
+    tracker = WalletTracker(config_store, provider, registry, db, queue)
+    return provider, registry, queue, tracker
 
 
-def entry(name):
-    return {"signature": name, "err": None, "blockTime": 1_755_000_000}
+def entry(name, slot=0):
+    return {"signature": name, "slot": slot, "err": None,
+            "blockTime": time.time()}
 
 
 def swap_for(provider, name, buy=True):
     provider.transactions[name] = make_swap_tx(
         TRADER, -2_000_005_000 if buy else 1_000_000_000,
         MINT, 400.0 if buy else -200.0)
+    provider.transactions[name]["blockTime"] = time.time()
+
+
+def sweep(tracker):
+    """Run the next scheduled sweep now instead of waiting out the
+    derived interval."""
+    tracker._next_batch_at = 0.0
+    tracker.tick()
 
 
 def test_burst_larger_than_budget_carries_over(follow_world):
-    provider, registry, engine, daemon = follow_world
-    provider.signatures[TRADER] = [entry("s0")]
-    daemon.tick()  # arm cursor
+    provider, registry, queue, tracker = follow_world
+    provider.signatures[TRADER] = [entry("s00", 100)]
+    tracker.tick()  # arm the watermark
 
     names = [f"s{i:02d}" for i in range(14, 0, -1)]  # s14 newest … s01
-    provider.signatures[TRADER] = [entry(n) for n in names] + [entry("s0")]
+    provider.signatures[TRADER] = ([entry(n, 100 + int(n[1:])) for n in names]
+                                   + [entry("s00", 100)])
     for n in names:
         swap_for(provider, n)
-    daemon.tick()
+    sweep(tracker)
     # Budget is 10: the OLDEST ten processed first, none skipped.
-    assert [s.observed.signature for s in engine.signals] == [
+    assert [s.observed.signature for s in queue.signals] == [
         f"s{i:02d}" for i in range(1, 11)]
-    daemon.tick()
-    assert [s.observed.signature for s in engine.signals] == [
+    sweep(tracker)
+    assert [s.observed.signature for s in queue.signals] == [
         f"s{i:02d}" for i in range(1, 15)]
 
 
 def test_rpc_failure_mid_poll_never_duplicates(follow_world):
-    provider, registry, engine, daemon = follow_world
-    provider.signatures[TRADER] = [entry("s0")]
-    daemon.tick()
+    provider, registry, queue, tracker = follow_world
+    provider.signatures[TRADER] = [entry("s0", 100)]
+    tracker.tick()
 
-    provider.signatures[TRADER] = [entry("s2"), entry("s1"), entry("s0")]
+    provider.signatures[TRADER] = [entry("s2", 300), entry("s1", 200),
+                                   entry("s0", 100)]
     swap_for(provider, "s1")
     swap_for(provider, "s2")
     provider.fail_transactions.add("s2")
-    daemon.tick()  # s1 executes, s2 fetch fails
-    assert [s.observed.signature for s in engine.signals] == ["s1"]
+    sweep(tracker)  # s1 executes, s2 fetch fails
+    assert [s.observed.signature for s in queue.signals] == ["s1"]
 
     provider.fail_transactions.clear()
-    daemon.tick()  # resumes at s2 — and must NOT replay s1
-    assert [s.observed.signature for s in engine.signals] == ["s1", "s2"]
+    sweep(tracker)  # resumes at s2 — and must NOT replay s1
+    assert [s.observed.signature for s in queue.signals] == ["s1", "s2"]
 
 
 # -- H4: discovery cursor must not jump past unfetched transactions -------

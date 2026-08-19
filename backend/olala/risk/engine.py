@@ -18,8 +18,6 @@ from dataclasses import dataclass
 from ..config import AppConfig
 from ..domain.models import RiskVerdict, TokenInfo
 
-MIN_ORDER_SOL = 0.05
-MAX_POSITION_EQUITY_MULTIPLE = 2.0
 
 
 @dataclass
@@ -83,14 +81,14 @@ class RiskEngine:
 
         # Per-position ceiling keeps one trade from dominating the wallet.
         position_cap_sol = (exposure.equity_sol * risk.per_trade_fraction
-                            * MAX_POSITION_EQUITY_MULTIPLE
+                            * risk.max_position_equity_multiple
                             ) - exposure.invested_in_mint_sol
 
         target_sol = exposure.equity_sol * risk.per_trade_fraction
         size = min(target_sol, liquidity_cap_sol, available_sol,
                    position_cap_sol)
 
-        if size < MIN_ORDER_SOL:
+        if size < risk.min_order_sol:
             constraint = min(
                 (liquidity_cap_sol, "liquidity ceiling (1% of pool)"),
                 (available_sol, "reserve/cash constraint"),

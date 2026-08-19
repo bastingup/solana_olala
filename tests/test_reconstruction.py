@@ -1,4 +1,7 @@
+import pytest
+
 from olala.discovery.reconstruction import TradeReconstructor
+from olala.domain.models import TradeSide
 
 from fakes import make_swap_tx
 
@@ -71,3 +74,100 @@ def test_uninvolved_transaction_ignored():
                       -2_000_000_000, MINT, 400.0)
     assert TradeReconstructor().reconstruct(TRADER, "sig1", tx) is None
     assert reconstruct(None) is None
+
+
+# -- dollar-quoted swaps ---------------------------------------------------
+#
+# Found by cross-checking a live followed wallet against Solana Tracker:
+# it reported 12 trades where we reconstructed ZERO, because every swap
+# was quoted in USDT rather than SOL. Missing such an ENTRY is merely a
+# dead seat. Missing such an EXIT means we keep holding a token the
+# trader has already sold, which is a real loss.
+
+from olala.constants import SOL_MINT, USDC_MINT, USDT_MINT
+
+
+def stable_swap(token_delta, quote_delta, quote_mint=USDC_MINT):
+    """A swap with no SOL leg at all — only a fee is paid in SOL."""
+    return make_swap_tx(TRADER, -5000, MINT, token_delta,
+                        extra_mint_delta=(quote_mint, quote_delta))
+
+
+def test_a_usdc_entry_is_recognised():
+    trade = TradeReconstructor().reconstruct(
+        TRADER, "sig", stable_swap(token_delta=500.0, quote_delta=-300.0))
+    assert trade is not None
+    assert trade.side is TradeSide.BUY
+    assert trade.mint == MINT
+    assert trade.quote_mint == USDC_MINT
+    assert trade.quote_amount == 300.0
+
+
+def test_a_usdt_exit_is_recognised():
+    """The dangerous half: without this we hold the bag forever."""
+    trade = TradeReconstructor().reconstruct(
+        TRADER, "sig",
+        stable_swap(token_delta=-500.0, quote_delta=296.55,
+                    quote_mint=USDT_MINT))
+    assert trade is not None
+    assert trade.side is TradeSide.SELL
+    assert trade.quote_mint == USDT_MINT
+
+
+def test_a_dollar_quoted_trade_is_not_scoreable():
+    """It has no SOL price, and inventing an exchange rate would distort
+    every win rate we compute."""
+    trade = TradeReconstructor().reconstruct(
+        TRADER, "sig", stable_swap(token_delta=500.0, quote_delta=-300.0))
+    assert trade.sol_denominated is False
+    assert trade.price_sol == 0.0
+    assert trade.sol_amount == 0.0
+
+
+def test_a_sol_quoted_trade_is_scoreable_and_unchanged():
+    trade = TradeReconstructor().reconstruct(
+        TRADER, "sig",
+        make_swap_tx(TRADER, -2_000_005_000, MINT, 400.0))
+    assert trade.sol_denominated is True
+    assert trade.quote_mint == SOL_MINT
+    assert trade.quote_amount == pytest.approx(trade.sol_amount)
+    assert trade.price_sol == pytest.approx(2.0 / 400.0)
+
+
+def test_dollar_dust_is_not_a_trade():
+    assert TradeReconstructor().reconstruct(
+        TRADER, "sig",
+        stable_swap(token_delta=1.0, quote_delta=-0.2)) is None
+
+
+def test_a_sol_leg_still_wins_when_a_route_passes_through_a_stablecoin():
+    """SOL is the leg we can price, so it decides the trade."""
+    tx = make_swap_tx(TRADER, -2_000_005_000, MINT, 400.0,
+                      extra_mint_delta=(USDC_MINT, 0.0))
+    trade = TradeReconstructor().reconstruct(TRADER, "sig", tx)
+    assert trade is not None
+    assert trade.quote_mint == SOL_MINT
+    assert trade.sol_denominated is True
+
+
+def test_two_non_quote_tokens_moving_is_still_not_a_swap_we_copy():
+    """A multi-token transaction is not something we can mirror."""
+    tx = make_swap_tx(TRADER, -2_000_005_000, MINT, 400.0,
+                      extra_mint_delta=("OtherMint1111", 50.0))
+    assert TradeReconstructor().reconstruct(TRADER, "sig", tx) is None
+
+
+def test_unpriceable_trades_are_excluded_from_scoring():
+    from olala.discovery.scoring import TraderScorer
+
+    reconstructor = TradeReconstructor()
+    buy = reconstructor.reconstruct(
+        TRADER, "s1", stable_swap(token_delta=500.0, quote_delta=-300.0))
+    sell = reconstructor.reconstruct(
+        TRADER, "s2", stable_swap(token_delta=-500.0, quote_delta=400.0))
+
+    stats = TraderScorer().compute_stats(TRADER, [buy, sell])
+    # Nothing was priced, so nothing is claimed: no invented PnL, no
+    # invented win rate.
+    assert stats.total_trades == 0
+    assert stats.realized_pnl_sol == 0.0

@@ -48,7 +48,6 @@ store.subscribe((kind, payload, state) => {
 
 const PHASE_LABELS = {
   sweep_start: "SWEEPING",
-  census: "TAKING CENSUS",
   finding_winners: "HUNTING WINNERS",
   mining_holders: "MINING HOLDERS",
   screening: "SCREENING",
@@ -88,9 +87,8 @@ function updateScanBanner(state) {
   text.textContent = (d.detail || "Working…") + readNote;
 
   counters.innerHTML = [
-    `<span>census <b>${d.counters.census_seen ?? 0}</b></span>`,
-    `<span>promoted <b>${d.counters.census_promoted ?? 0}</b></span>`,
     `<span>winners <b>${d.counters.winners_mined ?? 0}</b></span>`,
+    `<span>smart holders <b>${d.counters.smart_holders ?? 0}</b></span>`,
     `<span>screened <b>${d.counters.wallets_screened}</b></span>`,
     `<span class="blocked">bots blocked <b>${d.counters.bots_blocked}</b></span>`,
     `<span>too thin <b>${d.counters.too_thin ?? 0}</b></span>`,
@@ -109,6 +107,90 @@ function updateScanBanner(state) {
         + `${String(Math.floor(left % 60)).padStart(2, "0")}`
       : "sweeping…";
   }
+
+  updateTrackingLine(state);
+  updateSourceStrip(state);
+}
+
+// Tracking is the half of the system that decides whether a copy
+// happens at all, so it gets its own line rather than being inferred
+// from silence.
+function updateTrackingLine(state) {
+  const el = document.getElementById("track-line");
+  const t = state.tracking;
+  if (!t || !t.roster) {
+    el.innerHTML = "";
+    return;
+  }
+  const gear = t.gear === "round_robin" ? "ROUND ROBIN" : "BATCH";
+  const gearNote = t.gear === "round_robin"
+    ? "One wallet per tick — the cheap gear, used while the push stream "
+      + "keeps proving itself live."
+    : "Every wallet in one batched request — used at startup and whenever "
+      + "the push stream cannot be trusted.";
+  const coverage = t.gear === "round_robin"
+    ? `full sweep every <b>${Math.round(t.full_coverage_sec)}s</b>`
+    : `every <b>${t.configured_interval_sec}s</b>`;
+  const achieved = t.achieved_interval_sec
+    ? ` (achieved ${t.achieved_interval_sec.toFixed(1)}s)` : "";
+  const parts = [
+    `<span class="gear" title="${esc(gearNote)}">${gear}</span>`,
+    `<span>watching <b>${t.roster}</b> wallets, ${coverage}${achieved}</span>`,
+    `<span>copied <b>${t.signals_emitted}</b></span>`,
+  ];
+  if (!t.stream_proven) {
+    parts.push('<span class="warn" title="logsSubscribe fails silently on '
+      + 'public RPC, so the sweep stays on the expensive gear until the '
+      + 'stream proves it is delivering.">stream unproven</span>');
+  }
+  if (t.stale_entries_blocked) {
+    parts.push(`<span class="warn" title="Entries older than the staleness `
+      + `limit are refused: after an outage the backlog would buy into `
+      + `positions the trader already exited.">stale entries blocked `
+      + `<b>${t.stale_entries_blocked}</b></span>`);
+  }
+  if (t.gaps_detected) {
+    parts.push(`<span class="warn" title="A history gap could not be `
+      + `bridged, so the cursor did not advance. Nothing was copied twice.">`
+      + `gaps <b>${t.gaps_detected}</b></span>`);
+  }
+  if (t.legacy_rearmed) {
+    parts.push(`<span class="warn" title="Cursors written before slots were `
+      + `recorded were re-armed at the newest transaction. Trades in the `
+      + `gap were not copied.">re-armed <b>${t.legacy_rearmed}</b></span>`);
+  }
+  el.innerHTML = parts.join("");
+}
+
+// One chip per RPC source. A silent fall-through is not something an
+// operator should have to infer from a latency graph.
+function updateSourceStrip(state) {
+  const el = document.getElementById("source-strip");
+  const metrics = state.sources;
+  if (!metrics || !metrics.sources) {
+    el.innerHTML = "";
+    return;
+  }
+  const routed = metrics.routed || {};
+  el.innerHTML = Object.entries(metrics.sources).map(([name, s]) => {
+    let mode = "idle";
+    if (s.breaker_open_for_sec > 0) mode = "broken";
+    else if (routed[name]) mode = "serving";
+    const bits = [`${routed[name] || 0} calls`];
+    if (s.rate_limited) bits.push(`${s.rate_limited}x 429`);
+    if (s.failures) bits.push(`${s.failures} failed`);
+    if (s.breaker_open_for_sec > 0) {
+      bits.push(`retrying in ${Math.ceil(s.breaker_open_for_sec)}s`);
+    }
+    const title = `${bits.join(" · ")}`
+      + (s.last_error ? ` — ${s.last_error}` : "");
+    return `<span class="src" data-state="${mode}" title="${esc(title)}">`
+      + `${esc(name)}</span>`;
+  }).join("")
+    + (metrics.failovers
+        ? `<span class="src" title="Calls that fell through to another `
+          + `source after the preferred one failed.">`
+          + `${metrics.failovers} failovers</span>` : "");
 }
 
 // The countdown must tick even when no events arrive.

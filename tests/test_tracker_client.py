@@ -12,35 +12,31 @@ def wallet(i, trades=100, days=25):
             "counts": {"trades": trades}}
 
 
-class StubSession:
-    """Feeds scripted pages; records every request's params."""
+class StubHttp:
+    """Feeds scripted pages; records every request's params.
+
+    Stubs the shared ``HttpClient``, not ``requests`` — status handling,
+    throttle feedback and JSON decoding are that class's job now and are
+    covered by ``test_http_client.py``. What matters here is the
+    pagination and parameter logic layered on top.
+    """
 
     def __init__(self, pages):
         self.pages = pages          # list of (traders, next_cursor)
         self.requests = []
 
-    def get(self, url, params=None, timeout=None):
+    def get(self, path, params=None, timeout=None):
         self.requests.append(dict(params))
-        index = 0
-        cursor = params.get("cursor")
-        if cursor is not None:
-            index = int(cursor)
+        index = int(params.get("cursor") or 0)
         traders, next_cursor = self.pages[index]
-
-        class R:
-            status_code = 200
-            def raise_for_status(self): pass
-            def json(self_inner):
-                return {"traders": traders,
-                        "pagination": {"nextCursor": next_cursor}}
-        return R()
+        return {"traders": traders,
+                "pagination": {"nextCursor": next_cursor}}
 
 
 def client_with(pages):
     client = SolanaTrackerClient("test-key")
-    client._session = StubSession(pages)
-    client._limiter.acquire = lambda: None
-    return client, client._session
+    client._http = StubHttp(pages)
+    return client, client._http
 
 
 def test_paginates_until_enough_keepers():
@@ -84,26 +80,28 @@ def test_window_not_widened_when_it_already_fits():
 
 
 def test_first_page_failure_raises_later_pages_tolerated():
-    class FailingSecondPage(StubSession):
-        def get(self, url, params=None, timeout=None):
+    class FailingSecondPage(StubHttp):
+        def get(self, path, params=None, timeout=None):
             if params.get("cursor") is not None:
                 raise SolanaTrackerError("boom")
-            return super().get(url, params, timeout)
+            return super().get(path, params, timeout)
 
     keep = [wallet(i) for i in range(40)]
     client, _ = client_with([(keep, "1")])
-    client._session = FailingSecondPage([(keep, "1")])
+    client._http = FailingSecondPage([(keep, "1")])
 
     rows = client.top_traders(max_trades_per_day=600, max_pages=3, limit=100)
     assert len(rows) == 40      # partial result, not an exception
 
 
 def test_quality_floors_are_sent_only_when_set():
+    """Win rate is a FRACTION on our side and a PERCENT on the wire —
+    the conversion is the whole point (0.7 must not mean 0.7%)."""
     client, session = client_with([([wallet(1)], None)])
-    client.top_traders(min_roi_pct=100.0, min_win_rate_pct=55.0)
+    client.top_traders(min_roi_pct=100.0, min_win_rate=0.55)
     sent = session.requests[0]
     assert sent["minRoi"] == 100.0
-    assert sent["minWinRate"] == 55.0
+    assert sent["minWinRate"] == pytest.approx(55.0)
 
     client, session = client_with([([wallet(1)], None)])
     client.top_traders()          # zero = disabled, must not be sent

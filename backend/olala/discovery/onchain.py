@@ -1,30 +1,39 @@
 """STREAM B — our own on-chain discovery.
 
-Two sources, neither vetted by anyone: the **DEX census** (fee payers
-observed in live Jupiter/Raydium/Orca flow, tallied in a persistent
-sightings ledger) and **winners' holders** (wallets holding size in a
-token that just ran, who therefore bought early by construction).
+**Winners' holders**: wallets holding size in a token that just ran,
+who therefore bought early by construction. Nobody has vetted them.
 
 Because nobody has done the work for us, this stream does it: a cheap
 signature pre-screen here, then the daemon's full history scan and the
-``filters`` admission gate. That is the deliberate asymmetry with
-:mod:`~olala.discovery.leaderboard`, where a service has already
-measured and ranked the wallet — ``filters`` governs THIS stream.
+``filters_onchain`` admission gate. That is the deliberate asymmetry
+with :mod:`~olala.discovery.leaderboard`, where a service has already
+measured and ranked the wallet — ``filters_onchain`` governs THIS
+stream.
+
+A DEX census (sampling live Jupiter/Raydium/Orca flow for fee payers)
+used to run alongside this. It was dropped: it cost a fixed slice of
+every scan budget to enumerate wallets that are merely ACTIVE, and
+activity is the one thing a copy trader can find anywhere. Winners'
+holders selects on having been early into something that worked, which
+is the property actually worth scanning.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable
 
 from solders.pubkey import Pubkey
 
 from ..chain.market_data import MarketDataService
 from ..chain.provider import ChainError, RpcProvider
+from ..constants import SECONDS_PER_DAY
 from ..domain.models import TraderStatus
 from ..events import EventBus
 from ..persistence.database import Database
 from ..services.traders import TraderRegistry
+from .budget import RpcBudget
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +54,10 @@ PRESCREEN_MAX_FETCH = 1000
 # 30 trades in half an hour (an ordinary session) reads as 1,300/day.
 # Measured 2026-08-18 on a real nominee: 1,284/day at 30 signatures vs
 # 42/day at 500 — a 30x overestimate that rejected a genuine trader.
-PRESCREEN_PROBE = PRESCREEN_MAX_FETCH
 
 
 class OnChainSource:
-    """DEX census + winners' holders, with the pre-screen gate."""
+    """Winners' holders, with the pre-screen gate."""
 
     def __init__(self, provider: RpcProvider,
                  market_data: MarketDataService, registry: TraderRegistry,
@@ -69,62 +77,8 @@ class OnChainSource:
         self._winners_done: dict[str, float] = {}
 
     def harvest(self, config, budget) -> None:
-        """Both on-chain sources, in budget order."""
-        self._census_flow(config, budget)
         if not budget.exhausted:
             self._harvest_from_winners(config, budget)
-
-    # -- DEX census --------------------------------------------------------
-
-    def _census_flow(self, config, budget: RpcBudget) -> None:
-        """Observe live DEX flow and tally fee payers persistently; a
-        wallet seen trading in multiple sweeps is promoted to a candidate
-        and gets its full window measured."""
-        d = config.discovery
-        seen: set[str] = set()
-        for program in d.census_programs:
-            if not budget.take(1 + d.census_tx_sample):
-                break
-            self._report("census",
-                         f"Census: observing DEX flow ({program[:6]}…)",
-                         budget)
-            try:
-                signatures = self._provider.get_signatures(program, limit=25)
-            except ChainError as exc:
-                logger.warning("census read of %s failed: %s",
-                               program[:8], exc)
-                continue
-            sampled = [s for s in signatures
-                       if not s.get("err")][:d.census_tx_sample]
-            for entry in sampled:
-                try:
-                    tx = self._provider.get_transaction(entry["signature"])
-                except ChainError:
-                    continue
-                fee_payer = self._fee_payer(tx)
-                if fee_payer:
-                    seen.add(fee_payer)
-        if seen:
-            self._db.record_sightings(seen)
-            self._counters["census_seen"] += len(seen)
-
-        promoted = 0
-        for wallet, count in self._db.frequent_sightings(
-                d.census_min_sightings):
-            if budget.exhausted:
-                break
-            if self._registry.get(wallet) is not None:
-                continue
-            if not self._pre_screen(config, wallet, budget):
-                continue
-            if self._registry.add_candidate(wallet):
-                promoted += 1
-                self._counters["census_promoted"] += 1
-                logger.info("census promoted %s… (seen trading in %d "
-                            "sweeps)", wallet[:8], count)
-        if promoted:
-            self._bus.publish("discovery_scan", {
-                "source": "DEX census", "new_candidates": promoted})
 
     # -- winners' holders --------------------------------------------------
 
@@ -145,7 +99,6 @@ class OnChainSource:
     def _find_winner_tokens(self, config) -> list[dict]:
         """Tokens that ran hard enough over 24h to be worth mining for
         holders, from keyless trending stats with a DexScreener fallback."""
-        import time
         d = config.discovery
         self._report("finding_winners",
                      "Hunting for tokens that made a hard 24h run")
@@ -179,7 +132,6 @@ class OnChainSource:
                                 budget: RpcBudget) -> None:
         """Read the winner's top holders: real wallets holding size in a
         token that just ran bought early by construction."""
-        import time
         d = config.discovery
         if not budget.take(2):
             return
@@ -243,7 +195,7 @@ class OnChainSource:
             return False
         self._report("screening", f"Screening wallet {address[:6]}…", budget)
         # Always probe deep — same one credit, far better measurement.
-        probe = PRESCREEN_PROBE
+        probe = PRESCREEN_MAX_FETCH
         try:
             entries = self._provider.get_signatures(address, limit=probe)
         except ChainError as exc:
@@ -269,7 +221,7 @@ class OnChainSource:
             return True  # Low activity: deep scan will judge it.
         newest = float(entries[0].get("blockTime") or 0.0)
         oldest = float(entries[-1].get("blockTime") or 0.0)
-        span_days = max((newest - oldest) / 86_400.0, 1e-6)
+        span_days = max((newest - oldest) / SECONDS_PER_DAY, 1e-6)
         rate = len(entries) / span_days
         ceiling = (config.filters_onchain.max_trades_per_day
                    * PRESCREEN_RATE_MULTIPLIER)
@@ -291,14 +243,4 @@ class OnChainSource:
             profile.status = TraderStatus.REJECTED
             profile.rejection_reason = reason
             self._registry.update(profile, event="trader_rejected")
-
-    @staticmethod
-    def _fee_payer(tx) -> str | None:
-        if not tx:
-            return None
-        message = (tx.get("transaction") or {}).get("message") or {}
-        for key in message.get("accountKeys") or []:
-            if isinstance(key, dict) and key.get("signer"):
-                return key.get("pubkey")
-        return None
 

@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 class Roster:
     def __init__(self, registry: TraderRegistry,
                  assign_wallet: Callable[[], str],
-                 counters: dict[str, int]) -> None:
+                 counters: dict[str, int], db: Any = None) -> None:
         self._registry = registry
         self._assign_wallet = assign_wallet
         self._counters = counters
+        self._db = db
 
     def followed(self) -> list[TraderProfile]:
         return self._registry.followed()
@@ -70,8 +71,15 @@ class Roster:
                     worst.rejection_reason)
 
     def follow(self, profile: TraderProfile, score: float,
-               stats: Any = None, follow_cursor: str | None = None) -> None:
-        """Seat a trader and hand it a wallet to trade through."""
+               stats: Any = None,
+               watermark: tuple[int, str] | None = None) -> None:
+        """Seat a trader and hand it a wallet to trade through.
+
+        ``watermark`` arms tracking at the trader's CURRENT newest
+        signature. Without it the tracker would arm itself on its next
+        sweep — which is also safe, but a moment later, so a trade landing
+        in between would be missed.
+        """
         profile.status = TraderStatus.FOLLOWED
         profile.rejection_reason = ""
         profile.score = score
@@ -85,8 +93,12 @@ class Roster:
             logger.warning("trader %s… followed but no wallet was "
                            "available to assign — it cannot trade until "
                            "a wallet exists", profile.address[:8])
-        self._registry.update(profile, follow_cursor=follow_cursor,
-                              event="trader_admitted")
+        self._registry.update(profile, event="trader_admitted")
+        if watermark is not None and self._db is not None:
+            slot, signature = watermark
+            if signature:
+                self._db.update_watermarks(
+                    [(profile.address, slot, signature)])
         self._counters["admitted"] += 1
 
     def reject(self, profile: TraderProfile, reason: str) -> None:

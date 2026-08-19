@@ -166,13 +166,6 @@ button {
   background: rgba(34, 211, 238, 0.14);
 }
 
-/* Active trading profile: structural state, so it speaks purple. */
-.mode-badge[data-mode="hft"] {
-  border-color: var(--nebula);
-  color: var(--nebula-soft);
-  background: rgba(168, 85, 247, 0.18);
-}
-
 /* ---------- layout ---------- */
 
 #layout {
@@ -396,6 +389,61 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .scan-counters b { color: var(--ink); font-weight: 500; }
 .scan-counters .blocked b { color: var(--loss); }
 .scan-counters .admitted b { color: var(--gain); }
+
+/* Tracking: what the watcher is doing right now, and which gear it is
+   in. The gear matters — round-robin is the cheap one and only runs
+   while the stream has proven itself. */
+.track-line {
+  font-size: 10px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.track-line b { color: var(--ink); font-weight: 500; }
+/* The gear is structural state, so it speaks purple — like every other
+   structural state on the deck. It is deliberately NOT colour-coded by
+   gear: batching is the cautious mode, not a fault, and giving it an
+   alarm colour would cry wolf on the very state the system chooses for
+   safety. The label says which gear; the warn chips below carry the
+   things that are actually wrong. */
+.track-line .gear {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--nebula);
+  color: var(--nebula-soft);
+  letter-spacing: 0.06em;
+}
+
+.track-line .warn { color: var(--loss); }
+
+/* One chip per RPC source: who is serving traffic, who is broken. A
+   silent fall-through is not an event anybody should have to infer. */
+.source-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.source-strip .src {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--nebula-line);
+}
+.source-strip .src[data-state="serving"] {
+  border-color: var(--gain);
+  color: var(--gain);
+}
+.source-strip .src[data-state="broken"] {
+  border-color: var(--loss);
+  color: var(--loss);
+}
 
 .scan-banner[hidden] { display: none; }
 

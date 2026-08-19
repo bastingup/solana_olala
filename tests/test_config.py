@@ -61,4 +61,4 @@ def test_config_snapshot_is_isolated(config_store):
 def test_mutable_sections_whitelist():
     assert set(AppConfig._MUTABLE_SECTIONS) == {
         "filters_onchain", "filters_solanatracker", "risk",
-        "discovery", "follow"}
+        "discovery", "tracking", "paper_fills"}

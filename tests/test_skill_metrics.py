@@ -1,17 +1,12 @@
-"""Win-rate-first skill measurement: windowing, stale bags, SHARP, and
-the DEX census enumerator."""
+"""Win-rate-first skill measurement: windowing, stale bags, and SHARP."""
 
 import time
 
 import pytest
 
 from olala.config import OnChainFilters
-from olala.discovery.scanner import RpcBudget
 from olala.discovery.scoring import TraderScorer
-from olala.domain.models import ObservedTrade, TraderStatus, TradeSide
-
-from fakes import FakeJupiterTokens
-from test_discovery_v2 import human_signatures, make_daemon
+from olala.domain.models import ObservedTrade, TradeSide
 
 NOW = time.time()
 
@@ -129,7 +124,7 @@ def test_erratic_returns_rejected_by_sharpe_gate():
     assert "SHARP" in reason
 
 
-# -- DEX census ------------------------------------------------------------
+# -- pre-screen ------------------------------------------------------------
 
 def stage_program_flow(provider, program, sig_prefix, trader, tx):
     provider.signatures[program] = [
@@ -137,31 +132,4 @@ def stage_program_flow(provider, program, sig_prefix, trader, tx):
     provider.transactions[f"{sig_prefix}-1"] = tx
 
 
-def test_census_promotes_repeat_traders_only(db, bus, config_store):
-    from fakes import make_swap_tx
-    from test_discovery_v2 import ELITE
-    provider, registry, daemon = make_daemon(
-        db, bus, config_store, jupiter=FakeJupiterTokens([]))
-    programs = config_store.config.discovery.census_programs
-    tx = make_swap_tx(ELITE, -2_000_005_000, "MintX111", 100.0)
-    stage_program_flow(provider, programs[0], "c1", ELITE, tx)
-    provider.signatures[ELITE] = human_signatures()
 
-    daemon.onchain._census_flow(config_store.config, RpcBudget(60))
-    # One sighting: tallied but not promoted.
-    assert registry.get(ELITE) is None
-    assert db.frequent_sightings(1) == [(ELITE, 1)]
-
-    daemon.onchain._census_flow(config_store.config, RpcBudget(60))
-    # Second sighting crosses census_min_sightings=2: promoted.
-    profile = registry.get(ELITE)
-    assert profile is not None
-    assert profile.status is TraderStatus.CANDIDATE
-    assert daemon._counters["census_promoted"] == 1
-
-
-def test_census_sightings_survive_restart(db, bus, config_store):
-    db.record_sightings({"WalletA", "WalletB"})
-    db.record_sightings({"WalletA"})
-    assert db.frequent_sightings(2) == [("WalletA", 2)]
-    assert ("WalletB", 1) in db.frequent_sightings(1)

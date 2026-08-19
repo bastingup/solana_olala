@@ -46,16 +46,16 @@ class RecordingTracker(FakeTracker):
     def top_traders(self, window_days=90, limit=100, min_trades=20,
                     min_active_days=0, sort="win_percentage",
                     max_trades_per_day=None, max_pages=1,
-                    min_roi_pct=0.0, min_win_rate_pct=0.0):
+                    min_roi_pct=0.0, min_win_rate=0.0):
         self.params = {"window_days": window_days, "min_trades": min_trades,
                        "min_active_days": min_active_days, "sort": sort,
                        "max_trades_per_day": max_trades_per_day,
                        "max_pages": max_pages, "min_roi_pct": min_roi_pct,
-                       "min_win_rate_pct": min_win_rate_pct}
+                       "min_win_rate": min_win_rate}
         return super().top_traders(window_days, limit, min_trades,
                                    min_active_days, sort,
                                    max_trades_per_day, max_pages,
-                                   min_roi_pct, min_win_rate_pct)
+                                   min_roi_pct, min_win_rate)
 
 
 # -- STREAM SEPARATION ----------------------------------------------------
@@ -332,3 +332,38 @@ def test_progress_target_matches_the_real_depth_requirement(tmp_path, db,
     payload = [events.get_nowait() for _ in range(events.qsize())]
     progress = [e for e in payload if e["type"] == "candidate_progress"][0]
     assert progress["data"]["target_days"] == pytest.approx(33.0)
+
+
+def test_win_rate_is_a_fraction_everywhere(tmp_path, db, bus):
+    """0.7 must mean 70%, not 0.7%. Mixed units once seated traders
+    winning one trade in five."""
+    path = tmp_path / "wr.yaml"
+    path.write_text("filters_solanatracker:\n  min_win_rate: 0.7\n")
+    store = ConfigStore(path=path)
+    tracker = RecordingTracker(traders=[])
+    _, _, daemon = make_daemon(db, bus, store, tracker=tracker)
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    assert tracker.params["min_win_rate"] == 0.7      # fraction on our side
+
+
+def test_a_percent_typo_is_rejected_at_load(tmp_path):
+    """55 in a fraction field means 5500% — refuse it with the fix."""
+    path = tmp_path / "pct.yaml"
+    path.write_text("filters_solanatracker:\n  min_win_rate: 55.0\n")
+    with pytest.raises(ValueError, match="did you mean 0.55"):
+        ConfigStore(path=path)
+
+    path2 = tmp_path / "pct2.yaml"
+    path2.write_text("filters_onchain:\n  min_win_rate: 80\n")
+    with pytest.raises(ValueError, match="FRACTION"):
+        ConfigStore(path=path2)
+
+
+def test_a_fraction_typo_in_roi_is_rejected(tmp_path):
+    """0.5 in a percent field means half a percent — filters nothing."""
+    path = tmp_path / "roi.yaml"
+    path.write_text("filters_solanatracker:\n  min_roi_pct: 0.5\n")
+    with pytest.raises(ValueError, match="did you mean 50"):
+        ConfigStore(path=path)

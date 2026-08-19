@@ -40,8 +40,24 @@ class RateLimiter:
 
     # -- issuing -----------------------------------------------------------
 
-    def acquire(self) -> None:
-        """Block until a request slot is available."""
+    def acquire(self, cost: float = 1.0,
+                timeout: float | None = None) -> bool:
+        """Take ``cost`` slots, waiting up to ``timeout`` seconds.
+
+        ``cost`` lets a batched request pay for the sub-calls it actually
+        contains: public nodes meter by sub-call, so a 50-wallet batch
+        costs 50, not 1. The bucket's burst capacity is raised to at
+        least ``cost`` for the attempt, otherwise a large batch could
+        never be satisfied at all.
+
+        ``timeout`` is what makes fall-through possible: a caller that
+        cannot get a slot in time is told so (returns ``False``) and can
+        try the next source, instead of blocking behind a throttled one.
+        ``None`` waits indefinitely, which is the historical behaviour.
+        Nothing is consumed unless the return value is ``True``.
+        """
+        cost = max(float(cost), 0.0)
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             with self._lock:
                 now = time.monotonic()
@@ -49,14 +65,21 @@ class RateLimiter:
                     wait = self._blocked_until - now
                 else:
                     self._recover_locked(now)
+                    capacity = max(self._capacity, cost)
                     self._tokens = min(
-                        self._capacity,
+                        capacity,
                         self._tokens + (now - self._updated) * self._rate)
                     self._updated = now
-                    if self._tokens >= 1.0:
-                        self._tokens -= 1.0
-                        return
-                    wait = (1.0 - self._tokens) / self._rate
+                    if self._tokens >= cost:
+                        self._tokens -= cost
+                        return True
+                    wait = (cost - self._tokens) / self._rate
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                # Refuse rather than wait out a delay we already know
+                # exceeds the budget.
+                if remaining <= 0.0 or wait > remaining:
+                    return False
             time.sleep(min(wait, 5.0))
 
     # -- feedback ----------------------------------------------------------

@@ -8,6 +8,7 @@ the frontend stream never diverges from reality.
 from __future__ import annotations
 
 import threading
+import time
 
 from ..chain.provider import RpcProvider
 from ..config import ConfigStore
@@ -135,8 +136,13 @@ class PortfolioManager:
     def exposure(self, wallet_id: str, mint: str) -> WalletExposure:
         with self._lock:
             wallet = self._wallets[wallet_id]
+        # Read OUTSIDE the lock, and deliberately FRESH: this number
+        # decides how much real money the next order may spend, and
+        # fetching it under the lock stalled every other trade in the
+        # system behind one slow node.
+        cash = wallet.base_balance(max_age_sec=0.0)
+        with self._lock:
             open_here = self.open_positions(wallet_id)
-            cash = wallet.base_balance()
             equity = cash + sum(p.market_value_sol for p in open_here)
             invested = sum(p.sol_invested for p in open_here
                            if p.mint == mint)
@@ -208,7 +214,6 @@ class PortfolioManager:
 
     def apply_close(self, wallet: Wallet, position: Position, fill: Fill,
                     reason: ExitReason) -> Position:
-        import time
         with self._lock:
             self._closing.discard(position.id)
             if position.status is not PositionStatus.OPEN:
@@ -271,9 +276,14 @@ class PortfolioManager:
         return summary
 
     def snapshot(self) -> dict:
+        # Summaries are built OUTSIDE the lock. `wallet_summary` reads a
+        # wallet balance, and for a live wallet that can reach the chain
+        # — holding the portfolio lock across it stalled every buy, sell
+        # and panic stop behind a slow node.
         with self._lock:
-            wallets = [self.wallet_summary(w) for w in self._wallets.values()]
+            wallets_now = list(self._wallets.values())
             positions = [p.to_dict() for p in self._positions.values()]
+        wallets = [self.wallet_summary(w) for w in wallets_now]
         return {
             "wallets": wallets,
             "positions": positions,

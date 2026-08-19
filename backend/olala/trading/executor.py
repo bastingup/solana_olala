@@ -18,8 +18,10 @@ from typing import Callable
 
 from solders.transaction import VersionedTransaction
 
-from ..chain.jupiter import SOL_MINT, JupiterClient
-from ..chain.provider import LAMPORTS_PER_SOL, ChainError, RpcProvider
+from ..chain.jupiter import JupiterClient
+from ..chain.provider import ChainError, RpcProvider
+from ..config import PaperFillModel
+from ..constants import LAMPORTS_PER_SOL, SOL_MINT
 from ..discovery.reconstruction import TradeReconstructor
 from ..domain.models import (Fill, Receipt, ReceiptStatus, TokenInfo,
                              TradeSide, new_id)
@@ -27,10 +29,6 @@ from ..domain.wallet import Wallet
 from ..security.keystore import EncryptedKeystore
 
 logger = logging.getLogger(__name__)
-
-PAPER_FEE_SOL = 0.000105
-PAPER_BASE_SPREAD = 0.001
-MAX_MODELED_IMPACT = 0.05
 
 # A transaction's blockhash expires ~60-90s after send; a signature still
 # unconfirmed after this window can never land, so giving up is safe —
@@ -58,34 +56,46 @@ class PaperExecutor(TradeExecutor):
 
     Slippage is modeled as half the trade's share of pool liquidity plus a
     base spread, capped — small trades in deep pools fill near mid, and the
-    model punishes anything that approaches the liquidity ceiling.
+    model punishes anything that approaches the liquidity ceiling. The
+    three numbers behind that model are configuration (``paper_fills``),
+    because they decide whether paper results mean anything.
     """
 
+    def __init__(self, model: PaperFillModel | None = None) -> None:
+        self._model = model or PaperFillModel()
+
+    @property
+    def fee_sol(self) -> float:
+        return self._model.fee_sol
+
     def _impact(self, token: TokenInfo, trade_sol: float) -> float:
+        ceiling = self._model.max_modeled_impact
         sol_usd = token.price_usd / token.price_sol if token.price_sol else 0.0
         trade_usd = trade_sol * sol_usd
         if token.liquidity_usd <= 0:
-            return MAX_MODELED_IMPACT
-        return min(0.5 * trade_usd / token.liquidity_usd, MAX_MODELED_IMPACT)
+            return ceiling
+        return min(0.5 * trade_usd / token.liquidity_usd, ceiling)
 
     def buy(self, wallet: Wallet, token: TokenInfo, sol_amount: float) -> Fill:
+        fee = self._model.fee_sol
         price = token.price_sol * (
-            1.0 + PAPER_BASE_SPREAD + self._impact(token, sol_amount))
-        spendable = sol_amount - PAPER_FEE_SOL
+            1.0 + self._model.base_spread + self._impact(token, sol_amount))
+        spendable = sol_amount - fee
         if spendable <= 0 or price <= 0:
             raise ExecutionError("order too small to cover fees")
         return Fill(order_id=new_id(), side=TradeSide.BUY, mint=token.mint,
                     quantity=spendable / price, price_sol=price,
-                    sol_amount=sol_amount, fee_sol=PAPER_FEE_SOL)
+                    sol_amount=sol_amount, fee_sol=fee)
 
     def sell(self, wallet: Wallet, token: TokenInfo, quantity: float) -> Fill:
+        fee = self._model.fee_sol
         gross_sol = quantity * token.price_sol
         price = token.price_sol * (
-            1.0 - PAPER_BASE_SPREAD - self._impact(token, gross_sol))
-        proceeds = max(quantity * price - PAPER_FEE_SOL, 0.0)
+            1.0 - self._model.base_spread - self._impact(token, gross_sol))
+        proceeds = max(quantity * price - fee, 0.0)
         return Fill(order_id=new_id(), side=TradeSide.SELL, mint=token.mint,
                     quantity=quantity, price_sol=price,
-                    sol_amount=proceeds, fee_sol=PAPER_FEE_SOL)
+                    sol_amount=proceeds, fee_sol=fee)
 
 
 class LiveJupiterExecutor(TradeExecutor):
@@ -134,18 +144,24 @@ class LiveJupiterExecutor(TradeExecutor):
                  quote: dict, quoted_sol: float,
                  quoted_tokens: float) -> Fill:
         order_id = new_id()
-        signature = self._sign_and_send(wallet, quote)
-        receipt = Receipt(signature=signature, order_id=order_id,
-                          wallet_id=wallet.id, side=side, mint=token.mint,
-                          status=ReceiptStatus.TIMEOUT,
-                          quoted_sol=quoted_sol,
-                          quoted_tokens=quoted_tokens)
-        try:
-            status = self._await_confirmation(signature)
-        except ExecutionError as exc:
-            receipt.detail = str(exc)
-            self._record(receipt)
-            raise
+        # Broadcast and confirmation MUST share one source. Sent on node
+        # A and confirmed against node B, an honest "I have never seen
+        # that signature" is indistinguishable from "it never landed" —
+        # and this code treats the latter as definitive.
+        with self._provider.broadcast_session() as channel:
+            signature = self._sign_and_send(wallet, quote, channel)
+            receipt = Receipt(signature=signature, order_id=order_id,
+                              wallet_id=wallet.id, side=side,
+                              mint=token.mint,
+                              status=ReceiptStatus.TIMEOUT,
+                              quoted_sol=quoted_sol,
+                              quoted_tokens=quoted_tokens)
+            try:
+                status = self._await_confirmation(signature, channel)
+            except ExecutionError as exc:
+                receipt.detail = str(exc)
+                self._record(receipt)
+                raise
 
         receipt.slot = int(status.get("slot") or 0)
         if status.get("err") is not None:
@@ -176,27 +192,28 @@ class LiveJupiterExecutor(TradeExecutor):
                     sol_amount=actual_sol, fee_sol=fee_sol,
                     signature=signature)
 
-    def _sign_and_send(self, wallet: Wallet, quote: dict) -> str:
+    def _sign_and_send(self, wallet: Wallet, quote: dict, channel) -> str:
         signer = self._keystore.get_signer(wallet.address)
         tx_b64 = self._jupiter.build_swap_transaction(quote, wallet.address)
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(tx_b64))
         signed = VersionedTransaction(unsigned.message, [signer])
-        signature = self._provider.send_transaction(
+        signature = channel.send_transaction(
             base64.b64encode(bytes(signed)).decode())
         logger.info("live swap sent by %s: %s", wallet.id, signature)
         return signature
 
-    def _await_confirmation(self, signature: str) -> dict:
+    def _await_confirmation(self, signature: str, channel) -> dict:
         """Poll until the signature confirms; raise once it cannot.
 
         Past the blockhash window an unlanded transaction is dead, so the
         timeout below is a definitive no-execution — the caller may treat
-        it exactly like a rejected order.
+        it exactly like a rejected order. That conclusion is only sound
+        because ``channel`` is pinned to the node that broadcast it.
         """
         deadline = time.monotonic() + self._confirm_timeout
         while time.monotonic() < deadline:
             try:
-                status = self._provider.get_signature_status(signature)
+                status = channel.get_signature_status(signature)
             except ChainError as exc:
                 logger.warning("confirmation poll failed for %s: %s",
                                signature, exc)

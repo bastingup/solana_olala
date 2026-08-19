@@ -1,46 +1,87 @@
 # =====================================================================
-# MASTER CONFIG EXAMPLE — copy to config.yaml and fill in your keys.
+# OLALA — example configuration. Copy to `config.yaml` and edit.
 #
-# config.yaml is gitignored (it holds credentials). The two trading
-# profiles are NOT — they are shareable presets:
-#     hft: true   ->  config.hft.yaml    (high-frequency traders)
-#     hft: false  ->  config.slow.yaml   (slow / swing traders)
+# `config.yaml` is READ ONLY to the running application: it is never
+# rewritten, so your comments survive. Changes made through the UI are
+# written to `config.runtime.yaml` and layered on top at startup; delete
+# that file to revert to what you wrote here.
 #
-# Both flags below are read at BOOT ONLY — change one, restart.
+# Anything omitted falls back to the built-in defaults in
+# `olala/config.py`, which are deliberately the STRICT ones.
 # =====================================================================
 
-# THE FILTER SWITCH (note the direction):
-#   true  -> APPLY every filter in `filters_onchain` (strict)
-#   false -> IGNORE them: follow what on-chain discovery finds
-# Governs the on-chain stream only; `filters_solanatracker` configures
-# the leaderboard stream. Live wallets always get the safety screen.
-dev_mode: false
-
-# Trading profile selector — see the two config.<profile>.yaml files.
-hft: false
+# THE FILTER SWITCH — note the direction:
+#     true   -> APPLY every filter in `filters_onchain` (strict)
+#     false  -> IGNORE them: follow what on-chain discovery finds
+# Governs the ON-CHAIN stream only; the Solana Tracker stream is vetted
+# upstream. Live wallets always get the token safety screen regardless.
+dev_mode: true
 
 server:
   host: 127.0.0.1
   port: 8420
 
 chain:
-  rpc_endpoints:
-  - https://api.mainnet-beta.solana.com
-  - https://solana-rpc.publicnode.com
-  # Optional. A free key upgrades throughput from ~2 to 8 req/s.
-  helius_api_key:
-  # Optional PnL leaderboard feeder. Empty = purely on-chain discovery
-  # (census + winners' holders); any failure falls through to on-chain.
-  # Free key: https://www.solanatracker.io/data-api (10k requests/month)
-  solana_tracker_api_key:
-  requests_per_second: 2.0
+  # Optional. Free tier at https://dashboard.helius.dev — used for the
+  # WebSocket stream, per-trade fetches and broadcasting. NOT used for
+  # the tracking heartbeat: it meters batch elements individually.
+  helius_api_key: ''
+  # Optional. Free key: https://www.solanatracker.io/data-api
+  # Empty = discovery runs purely on-chain (winners' holders).
+  solana_tracker_api_key: ''
   request_timeout_sec: 15.0
+  # Slippage tolerance for LIVE swaps, in basis points (100 = 1%).
+  slippage_bps: 100
 
 # ---------------------------------------------------------------------
-# RISK EXPOSURE — how much money any single trade may touch. Deliberately
-# NOT part of a trading profile: switching strategy must never silently
-# change your exposure.
+# RPC SOURCES. Every default here was MEASURED against the live
+# endpoint. `max_wallet_calls_per_sec` is load-bearing: public nodes
+# meter by SUB-CALL, so a batch of 50 addresses costs 50, and the
+# sustainable poll interval is (roster / this).
 # ---------------------------------------------------------------------
+sources:
+  publicnode:
+    endpoints:
+    - https://solana-rpc.publicnode.com
+    ws_endpoint: wss://solana-rpc.publicnode.com
+    supports_batch: true
+    max_batch: 100
+    max_wallet_calls_per_sec: 10.0
+
+  helius:
+    endpoints:
+    - https://mainnet.helius-rpc.com/
+    ws_endpoint: wss://mainnet.helius-rpc.com/
+    supports_batch: true
+    max_batch: 10
+    max_wallet_calls_per_sec: 8.0
+    metered: true
+    monthly_credit_cap: 1000000
+
+  mainnet_beta:
+    endpoints:
+    - https://api.mainnet-beta.solana.com
+    supports_batch: false
+    max_wallet_calls_per_sec: 1.0
+
+# Ordered fall-through per policy, most preferred first.
+routing:
+  tracking:  [publicnode, mainnet_beta]
+  history:   [publicnode, helius, mainnet_beta]
+  metadata:  [helius, publicnode]
+  broadcast: [helius, publicnode]
+  confirm:   [helius, publicnode]
+  stream:    [helius, publicnode]
+
+tracking:
+  min_interval_sec: 5.0
+  tick_sec: 1.0
+  signatures_per_poll: 30
+  max_transactions_per_cycle: 60
+  max_signal_age_sec: 90.0
+  price_mark_interval_sec: 20
+  stream_proof_interval_sec: 60.0
+
 risk:
   max_liquidity_fraction: 0.01
   reserve_fraction: 0.3
@@ -48,10 +89,58 @@ risk:
   max_positions_per_wallet: 8
   atr_period: 14
   atr_stop_multiplier: 3.5
-  # LP vaults count toward this, so values below ~0.3 reject almost
-  # every real token.
   max_token_top10_holder_fraction: 0.5
+  min_pair_age_days: 14.0
   max_live_wallets_per_token: 2
+  min_order_sol: 0.05
+  max_position_equity_multiple: 2.0
+
+paper_fills:
+  fee_sol: 0.000105
+  base_spread: 0.001
+  max_modeled_impact: 0.05
+
+# Applied only when dev_mode: true.
+filters_onchain:
+  min_history_days: 90
+  min_trades: 200
+  min_round_trips: 20
+  # FRACTION, not percent: 0.6 = 60%.
+  min_win_rate: 0.6
+  min_sharpe: 0.1
+  stale_bag_days: 7.0
+  max_inactive_hours: 24
+  max_trades_per_day: 40.0
+  min_median_hold_minutes: 30.0
+  min_token_market_cap_usd: 20000000.0
+  min_token_liquidity_usd: 500000.0
+  max_token_market_cap_usd: 5000000000.0
+
+filters_solanatracker:
+  sort: roi
+  window_days: 30
+  min_active_days: 10
+  min_trades: 20
+  min_roi_pct: 0.0
+  # FRACTION, not percent: 0.55 = 55%.
+  min_win_rate: 0.0
+  pages: 3
+  interval_sec: 3600
+  max_trades_per_day: 2000.0
+
+discovery:
+  scan_interval_sec: 180
+  max_followed_traders: 10
+  max_candidates_per_scan: 120
+  signatures_per_trader: 3000
+  rpc_calls_per_scan: 200
+  skill_window_days: 90
+  replace_margin: 0.02
+  winner_min_price_change_pct: 30.0
+  winner_min_liquidity_usd: 150000.0
+  winners_per_scan: 3
+  winner_top_holders: 20
+  winner_max_holder_share: 0.1
 
 paper:
   wallet_count: 3

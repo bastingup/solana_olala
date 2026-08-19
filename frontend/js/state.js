@@ -25,6 +25,8 @@ export class Store {
       scanProgress: new Map(),
       lastScanAt: 0,
       discovery: null,
+      tracking: null,
+      sources: null,
       feed: [],
       receipts: [],
       solPrice: 0,
@@ -64,11 +66,12 @@ export class Store {
   _on_snapshot(data) {
     this.state.hydrated = true;
     this.state.devMode = Boolean(data.dev_mode);
-    this.state.profile = data.profile || "";
     this.state.keystore = data.keystore;
     this.state.solPrice = data.sol_price_usd || 0;
     this.state.config = data.config || null;
     this.state.discovery = data.discovery || null;
+    this.state.tracking = data.tracking || null;
+    this.state.sources = data.sources || null;
     this.state.wallets = new Map(data.wallets.map((w) => [w.id, w]));
     this.state.traders = new Map(data.traders.map((t) => [t.address, t]));
     this.state.positions = new Map(data.positions.map((p) => [p.id, p]));
@@ -155,6 +158,10 @@ export class Store {
 
   _on_discovery_status(data) {
     this.state.discovery = data;
+  }
+
+  _on_tracking_status(data) {
+    this.state.tracking = data;
   }
 
   _on_trader_reassigned(data, ts) {

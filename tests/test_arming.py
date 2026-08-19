@@ -19,6 +19,7 @@ class RecordingLiveExecutor(PaperExecutor):
     """Live-executor stand-in: paper fills, but records that it was used."""
 
     def __init__(self):
+        super().__init__()
         self.calls = []
 
     def buy(self, wallet, token, sol_amount):

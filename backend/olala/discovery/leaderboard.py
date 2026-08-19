@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
-from ..domain.models import TraderStats, TraderStatus
+from ..domain.models import TraderStats
 from ..events import EventBus
 from ..services.traders import TraderRegistry
 from .roster import Roster
@@ -86,7 +85,7 @@ class LeaderboardSource:
                                 if board.max_trades_per_day > 0 else None),
             max_pages=board.pages,
             min_roi_pct=board.min_roi_pct,
-            min_win_rate_pct=board.min_win_rate_pct)
+            min_win_rate=board.min_win_rate)
 
         followed = 0
         for position, entry in enumerate(entries):
@@ -119,7 +118,7 @@ class LeaderboardSource:
             self._roster.reject(
                 profile, "roster full — did not beat the weakest seat")
             return False
-        # No follow cursor: FollowDaemon arms it at the trader's newest
+        # No follow cursor: WalletTracker arms it at the trader's newest
         # signature on first contact, so no history replays as signals.
         self._roster.follow(profile, score, stats=self._stats(entry))
         logger.info("followed %s… on service vetting (roi rank %d/%d, "

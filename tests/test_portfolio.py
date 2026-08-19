@@ -92,3 +92,96 @@ def test_state_survives_reload(db, bus, config_store, token):
     assert len(reloaded.open_positions(wallet.id)) == 1
     # No extra paper wallets were minted on reload.
     assert len(reloaded.wallets()) == len(portfolio.wallets())
+
+
+# -- the hot path must never block on the chain ----------------------------
+
+def test_snapshot_does_not_hold_the_lock_across_a_chain_read(db, bus,
+                                                             config_store):
+    """`snapshot()` used to call base_balance() — a blocking RPC for a
+    live wallet — while holding the portfolio lock, so a slow node
+    stalled every buy, sell and panic stop in the system."""
+    import threading
+    import time
+
+    from solders.keypair import Keypair
+
+    from fakes import FakeProvider
+
+    class SlowProvider(FakeProvider):
+        def get_sol_balance(self, address):
+            time.sleep(0.3)
+            return 5.0
+
+    portfolio = PortfolioManager(db, bus, config_store, SlowProvider())
+    portfolio.add_live_wallet("Vault", str(Keypair().pubkey()))
+
+    acquired = threading.Event()
+
+    def grab_lock():
+        # Whatever snapshot() is doing, the lock must be obtainable.
+        with portfolio._lock:
+            acquired.set()
+
+    snapshotter = threading.Thread(target=portfolio.snapshot)
+    snapshotter.start()
+    time.sleep(0.05)                       # let it get into the slow read
+    threading.Thread(target=grab_lock).start()
+
+    assert acquired.wait(timeout=0.2), \
+        "portfolio lock was held across a chain read"
+    snapshotter.join(timeout=2)
+
+
+def test_live_balance_is_cached_between_reads(db, bus, config_store):
+    from solders.keypair import Keypair
+
+    from fakes import FakeProvider
+
+    class CountingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def get_sol_balance(self, address):
+            self.reads += 1
+            return 7.0
+
+    provider = CountingProvider()
+    portfolio = PortfolioManager(db, bus, config_store, provider)
+    wallet = portfolio.add_live_wallet("Vault", str(Keypair().pubkey()))
+
+    before = provider.reads
+    for _ in range(5):
+        wallet.base_balance()
+    assert provider.reads == before        # served from cache
+
+    # Sizing demands certainty and pays for it.
+    assert wallet.base_balance(max_age_sec=0.0) == 7.0
+    assert provider.reads == before + 1
+
+
+def test_a_failed_balance_read_keeps_the_last_known_value(db, bus,
+                                                          config_store):
+    from solders.keypair import Keypair
+
+    from fakes import FakeProvider
+
+    class FlakyProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.fail = False
+
+        def get_sol_balance(self, address):
+            if self.fail:
+                raise RuntimeError("node is down")
+            return 3.0
+
+    provider = FlakyProvider()
+    portfolio = PortfolioManager(db, bus, config_store, provider)
+    wallet = portfolio.add_live_wallet("Vault", str(Keypair().pubkey()))
+    assert wallet.base_balance(max_age_sec=0.0) == 3.0
+
+    provider.fail = True
+    # An outage must not read as "the wallet is empty".
+    assert wallet.base_balance(max_age_sec=0.0) == 3.0

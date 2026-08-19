@@ -233,12 +233,11 @@ def test_status_is_retained_for_late_connecting_clients(db, bus,
     status = daemon.last_status
     assert status is not None
     assert status["phase"] == "sweep_done"
-    assert status["source"] == "On-chain (census + winners)"
+    assert status["source"] == "On-chain (winners' holders)"
     assert status["next_sweep_at"] > 0
     assert set(status["counters"]) == {
-        "census_seen", "census_promoted", "wallets_screened",
-        "bots_blocked", "too_thin", "winners_mined", "smart_holders",
-        "histories_read", "admitted", "rejected"}
+        "wallets_screened", "bots_blocked", "too_thin", "winners_mined",
+        "smart_holders", "histories_read", "admitted", "rejected"}
 
 
 def test_bot_block_increments_counter(db, bus, config_store):

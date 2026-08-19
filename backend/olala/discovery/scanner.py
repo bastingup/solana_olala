@@ -4,13 +4,12 @@
 service that indexes the whole chain ranks and vets the wallets, so we
 take its output as given and follow the names it returns. Costs no RPC.
 
-**Stream B, on-chain** (:mod:`~olala.discovery.onchain`): the DEX census
-and winners' holders surface wallets nobody has vetted, so this daemon
-does the work — pre-screen, incremental history reconstruction under a
-per-sweep RPC budget, then the ``filters`` admission gate. **The
-``filters`` section governs this stream only**; applying it to Stream A
-would re-derive, with a narrower window, a judgment the service already
-made better.
+**Stream B, on-chain** (:mod:`~olala.discovery.onchain`): winners'
+holders surfaces wallets nobody has vetted, so this daemon does the
+work — pre-screen, incremental history reconstruction under a per-sweep
+RPC budget, then the ``filters_onchain`` admission gate. **That section
+governs this stream only**; applying it to Stream A would re-derive,
+with a narrower window, a judgment the service already made better.
 
 **Fall-through is unconditional:** Stream A runs first because it is
 free, but if it is disabled, unkeyed, throttled, rate-limited or simply
@@ -24,14 +23,14 @@ tally is in-memory and rebuilds over ticks.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable
-
-from solders.pubkey import Pubkey
 
 from ..chain.market_data import MarketDataService
 from ..chain.provider import ChainError, RpcProvider
 from ..chain.solana_tracker import SolanaTrackerError
 from ..config import ConfigStore
+from ..constants import SECONDS_PER_DAY
 from ..domain.models import TraderStatus
 from ..events import EventBus
 from ..persistence.database import Database
@@ -42,6 +41,7 @@ from .leaderboard import LeaderboardSource
 from .onchain import OnChainSource
 from .reconstruction import TradeReconstructor
 from .roster import Roster
+from .budget import RpcBudget
 from .scoring import TraderScorer
 
 logger = logging.getLogger(__name__)
@@ -50,22 +50,6 @@ logger = logging.getLogger(__name__)
 # credit, so large batches make history listing nearly free — the deep
 # scan's cost is the per-transaction fetches, as it should be.
 SIGNATURE_BATCH = 500
-TX_CALLS_PER_CANDIDATE = 12
-
-
-class RpcBudget:
-    def __init__(self, calls: int) -> None:
-        self._remaining = calls
-
-    def take(self, count: int = 1) -> bool:
-        if self._remaining < count:
-            return False
-        self._remaining -= count
-        return True
-
-    @property
-    def exhausted(self) -> bool:
-        return self._remaining <= 0
 
 
 class TraderDiscoveryDaemon(Daemon):
@@ -89,13 +73,12 @@ class TraderDiscoveryDaemon(Daemon):
         self._oldest_seen: dict[str, float] = {}
         self._newest_seen: dict[str, str] = {}
         self._scanned_counts: dict[str, int] = {}
-        self._counters = {"census_seen": 0, "census_promoted": 0,
-                          "wallets_screened": 0, "bots_blocked": 0,
+        self._counters = {"wallets_screened": 0, "bots_blocked": 0,
                           "too_thin": 0, "winners_mined": 0,
                           "smart_holders": 0, "histories_read": 0,
                           "admitted": 0, "rejected": 0}
         # Both streams compete for seats on the same terms.
-        self._roster = Roster(registry, assign_wallet, self._counters)
+        self._roster = Roster(registry, assign_wallet, self._counters, db)
         self.leaderboard = LeaderboardSource(
             tracker, registry, bus, self._roster, self._counters)
         self.onchain = OnChainSource(
@@ -113,13 +96,12 @@ class TraderDiscoveryDaemon(Daemon):
         The latest payload is retained so a page loaded between sweeps
         still shows current state instead of an empty console.
         """
-        import time
         config = self._store.config
         self.last_status = {
             "phase": phase,
             "detail": detail,
             "source": ("Solana Tracker PnL" if self.leaderboard.available
-                       else "On-chain (census + winners)"),
+                       else "On-chain (winners' holders)"),
             "counters": dict(self._counters),
             "candidates": len(
                 self._registry.by_status(TraderStatus.CANDIDATE)),
@@ -131,7 +113,6 @@ class TraderDiscoveryDaemon(Daemon):
         self._bus.publish("discovery_status", self.last_status)
 
     def tick(self) -> None:
-        import time
         config = self._store.config
         self._next_sweep_at = time.time() + self._interval
         budget = RpcBudget(config.discovery.rpc_calls_per_scan)
@@ -260,11 +241,10 @@ class TraderDiscoveryDaemon(Daemon):
     def _publish_progress(self, config, address: str,
                           complete: bool) -> None:
         """Report scan progress so the operator can watch discovery work."""
-        import time
         scanned = self._scanned_counts.get(address, 0)
         trades = self._db.count_observed_trades(address)
         oldest = self._oldest_seen.get(address)
-        depth_days = (time.time() - oldest) / 86_400.0 if oldest else 0.0
+        depth_days = (time.time() - oldest) / SECONDS_PER_DAY if oldest else 0.0
         # The bar must track what _has_enough_depth actually requires,
         # or it reads 100% while the scan is still running.
         target_days = max(config.filters_onchain.min_history_days,
@@ -284,7 +264,6 @@ class TraderDiscoveryDaemon(Daemon):
         })
 
     def _has_enough_depth(self, config, address: str) -> bool:
-        import time
         if not config.dev_mode:
             # Filters off: one scanned batch is enough to judge and
             # follow, so paper activity flows without a deep scan.
@@ -295,21 +274,20 @@ class TraderDiscoveryDaemon(Daemon):
         oldest = self._oldest_seen.get(address)
         if not oldest:
             return False
-        covered_days = (time.time() - oldest) / 86_400.0
+        covered_days = (time.time() - oldest) / SECONDS_PER_DAY
         required = max(config.filters_onchain.min_history_days,
                        config.discovery.skill_window_days)
         return covered_days >= required * 1.1
 
     def _finalize_candidate(self, config, address: str,
                             budget: RpcBudget) -> None:
-        import time
         profile = self._registry.get(address)
         if profile is None or profile.status is not TraderStatus.CANDIDATE:
             return
         trades = self._db.load_observed_trades(address)
         # Skill is judged inside the window; the full record only proves
         # the wallet has been around and active long enough.
-        cutoff = time.time() - config.discovery.skill_window_days * 86_400.0
+        cutoff = time.time() - config.discovery.skill_window_days * SECONDS_PER_DAY
         window = [t for t in trades if t.block_time >= cutoff]
         stats_full = self._scorer.compute_stats(address, trades)
         stats = self._scorer.compute_stats(
@@ -343,21 +321,21 @@ class TraderDiscoveryDaemon(Daemon):
 
     def _admit(self, profile, trades, budget: RpcBudget) -> None:
         address = profile.address
-        # Arm the follow cursor at the trader's CURRENT newest signature,
-        # not the one from when scanning began — otherwise days-old
-        # qualification-era trades replay as live signals.
-        follow_cursor = self._newest_seen.get(
-            address, trades[-1].signature if trades else "")
+        # Arm the tracking watermark at the trader's CURRENT newest
+        # signature, not the one from when scanning began — otherwise
+        # days-old qualification-era trades replay as live signals.
+        watermark: tuple[int, str] | None = None
         if budget.take(1):
             try:
                 latest = self._provider.get_signatures(address, limit=1)
                 if latest:
-                    follow_cursor = latest[0]["signature"]
+                    watermark = (int(latest[0].get("slot") or 0),
+                                 latest[0]["signature"])
             except ChainError as exc:
-                logger.warning("could not refresh follow cursor for "
-                               "%s: %s", address, exc)
-        self._roster.follow(profile, profile.score,
-                            follow_cursor=follow_cursor)
+                logger.warning("could not arm the tracking watermark for "
+                               "%s: %s — the tracker will arm itself on "
+                               "its next sweep", address, exc)
+        self._roster.follow(profile, profile.score, watermark=watermark)
         logger.info("admitted trader %s (score %.3f, win rate %.0f%%)",
                     address, profile.score,
                     (profile.stats.win_rate if profile.stats else 0) * 100)

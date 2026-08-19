@@ -22,13 +22,11 @@ class TraderRegistry:
         self._profiles: dict[str, TraderProfile] = {}
         self._history_cursors: dict[str, str] = {}
         self._history_complete: dict[str, bool] = {}
-        self._follow_cursors: dict[str, str] = {}
         for row in db.load_traders():
             profile = Database.trader_from_row(row)
             self._profiles[profile.address] = profile
             self._history_cursors[profile.address] = row["history_cursor"]
             self._history_complete[profile.address] = bool(row["history_complete"])
-            self._follow_cursors[profile.address] = row["follow_cursor"]
 
     # -- queries -----------------------------------------------------------
 
@@ -52,10 +50,6 @@ class TraderRegistry:
             return (self._history_cursors.get(address, ""),
                     self._history_complete.get(address, False))
 
-    def follow_cursor(self, address: str) -> str:
-        with self._lock:
-            return self._follow_cursors.get(address, "")
-
     # -- mutations ---------------------------------------------------------
 
     def add_candidate(self, address: str) -> bool:
@@ -70,15 +64,19 @@ class TraderRegistry:
 
     def update(self, profile: TraderProfile, history_cursor: str | None = None,
                history_complete: bool | None = None,
-               follow_cursor: str | None = None, event: str = "") -> None:
+               event: str = "") -> None:
+        """Persist a profile change.
+
+        The tracking watermark is NOT part of this. It belongs to the
+        tracker, which is its sole writer — a registry that also wrote it
+        wiped the tracker's progress on every score update.
+        """
         with self._lock:
             self._profiles[profile.address] = profile
             if history_cursor is not None:
                 self._history_cursors[profile.address] = history_cursor
             if history_complete is not None:
                 self._history_complete[profile.address] = history_complete
-            if follow_cursor is not None:
-                self._follow_cursors[profile.address] = follow_cursor
             self._persist(profile)
         if event:
             self._bus.publish(event, profile.to_dict())
@@ -87,5 +85,4 @@ class TraderRegistry:
         self._db.upsert_trader(
             profile,
             history_cursor=self._history_cursors.get(profile.address, ""),
-            history_complete=self._history_complete.get(profile.address, False),
-            follow_cursor=self._follow_cursors.get(profile.address, ""))
+            history_complete=self._history_complete.get(profile.address, False))

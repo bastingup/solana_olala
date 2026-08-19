@@ -30,15 +30,33 @@ from ..security.keystore import EncryptedKeystore
 from ..services.traders import TraderRegistry
 from ..trading.engine import TradingEngine
 from ..trading.executor import LiveJupiterExecutor, PaperExecutor
-from ..trading.follower import FollowDaemon
 from ..trading.marker import MarkDaemon
 from ..trading.portfolio import PortfolioManager
+from ..trading.signals import SignalQueue
+from ..trading.tracker import WalletTracker
 from .rest import build_rest_blueprint
 from .stream import register_stream
 
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parents[3] / "frontend"
+
+
+# Anything whose name looks like a credential never reaches a client,
+# whatever section it was added to. A hand-maintained list of secret
+# keys is one forgotten entry away from publishing an API key.
+_SECRET_HINTS = ("api_key", "apikey", "secret", "password", "token",
+                 "private_key", "mnemonic")
+
+
+def _redact_secrets(value):
+    """Recursively drop credential-shaped keys from a config snapshot."""
+    if isinstance(value, dict):
+        return {k: _redact_secrets(v) for k, v in value.items()
+                if not any(hint in k.lower() for hint in _SECRET_HINTS)}
+    if isinstance(value, list):
+        return [_redact_secrets(v) for v in value]
+    return value
 
 
 class AppContext:
@@ -54,7 +72,7 @@ class AppContext:
         config = self.store.config
         self.bus = EventBus()
         self.db = database or Database()
-        self.provider = provider or build_provider(config.chain)
+        self.provider = provider or build_provider(config)
         self.market_data = market_data or MarketDataService()
         self.registry = TraderRegistry(self.db, self.bus)
         self.keystore = keystore or EncryptedKeystore()
@@ -63,35 +81,48 @@ class AppContext:
         self.atr = AtrTracker(config.risk.atr_period)
         safety = TokenSafetyScreen(self.provider)
         risk = RiskEngine()
-        self.jupiter = jupiter = JupiterClient()
+        self.jupiter = jupiter = JupiterClient(config.chain.slippage_bps)
         self.engine = TradingEngine(
             self.store, self.portfolio, self.registry, self.market_data,
             safety, risk, self.bus,
-            paper_executor=PaperExecutor(),
+            paper_executor=PaperExecutor(config.paper_fills),
             live_executor=LiveJupiterExecutor(
                 jupiter, self.provider, self.keystore,
-                on_receipt=self.record_receipt))
-        follower = FollowDaemon(self.store, self.provider, self.registry,
-                                self.engine)
-        tracker = (SolanaTrackerClient(config.chain.solana_tracker_api_key)
-                   if config.chain.solana_tracker_api_key else None)
+                on_receipt=self.record_receipt),
+            tracking_health=lambda trader: self.tracker.blind_reason(trader))
+        # Detection and execution run at wildly different speeds, so the
+        # tracker never calls the engine directly: it enqueues, and
+        # workers execute. One confirming swap must not stop every other
+        # wallet from being watched.
+        self.signals = SignalQueue(self.engine.handle_signal)
+        self.tracker = WalletTracker(
+            self.store, self.provider, self.registry, self.db,
+            self.signals, on_status=self._publish_tracking)
+        self.subscriber = TraderSubscriber(
+            self.provider, self.registry,
+            on_activity=self.tracker.note_activity,
+            on_alive=self.tracker.note_stream_alive)
+        leaderboard = (SolanaTrackerClient(config.chain.solana_tracker_api_key)
+                       if config.chain.solana_tracker_api_key else None)
         self.discovery = TraderDiscoveryDaemon(
             self.store, self.provider, self.market_data, self.registry,
             self.db, self.bus, assign_wallet=self.assign_wallet,
-            jupiter=jupiter, tracker=tracker)
+            jupiter=jupiter, tracker=leaderboard)
         self.daemons = [
             self.discovery,
-            follower,
+            self.tracker,
             MarkDaemon(self.store, self.portfolio, self.market_data,
                        self.atr, self.engine, self.bus),
-            TraderSubscriber(self.provider, self.registry,
-                             on_activity=follower.poll_now),
+            self.subscriber,
         ]
-        logger.info("application context ready (provider: %s, profile: "
-                    "%s%s)", self.provider.name, self.store.profile_name,
+        logger.info("application context ready (provider: %s%s)",
+                    self.provider.name,
                     ", dev mode" if config.dev_mode else "")
 
     # -- cross-service policies -------------------------------------------
+
+    def _publish_tracking(self, status: dict) -> None:
+        self.bus.publish("tracking_status", status)
 
     def record_receipt(self, receipt) -> None:
         """Persist and broadcast one live-order receipt — the on-chain
@@ -117,20 +148,27 @@ class AppContext:
     # -- snapshots ---------------------------------------------------------
 
     def public_config(self) -> dict:
+        """The configuration as the browser may see it.
+
+        Every credential is replaced by a boolean. This runs over the
+        WHOLE config, not a hand-listed pair of keys: `sources.*.api_key`
+        is populated from `chain.helius_api_key` at load, so a redactor
+        that only knew about `chain` would have shipped the key to every
+        connected client through the source block instead.
+        """
         config = self.store.config.to_dict()
         chain = config.get("chain", {})
         chain["helius_enabled"] = bool(chain.pop("helius_api_key", ""))
         chain["solana_tracker_enabled"] = bool(
             chain.pop("solana_tracker_api_key", ""))
-        return config
+        for source in (config.get("sources") or {}).values():
+            source.pop("api_key", None)
+        return _redact_secrets(config)
 
     def snapshot(self) -> dict:
         snapshot = self.portfolio.snapshot()
         snapshot.update({
             "dev_mode": self.store.config.dev_mode,
-            # The active trading profile rides in the snapshot so the UI
-            # can never disagree with the file the backend actually read.
-            "profile": self.store.profile_name,
             "keystore": {"exists": self.keystore.exists,
                          "locked": self.keystore.is_locked},
             "traders": [p.to_dict() for p in self.registry.all()],
@@ -138,18 +176,23 @@ class AppContext:
             "fills": self.db.load_fills(50),
             "receipts": self.db.load_receipts(50),
             "discovery": self.discovery.last_status,
+            "tracking": self.tracker.status.to_dict(),
+            "sources": (self.provider.router.metrics()
+                        if hasattr(self.provider, "router") else {}),
         })
         return snapshot
 
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
+        self.signals.start()
         for daemon in self.daemons:
             daemon.start()
 
     def stop(self) -> None:
         for daemon in self.daemons:
             daemon.stop()
+        self.signals.stop()
 
 
 class StrictJSONProvider(DefaultJSONProvider):

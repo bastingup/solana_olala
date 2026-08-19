@@ -12,15 +12,14 @@ import threading
 import time
 from typing import Any
 
-import requests
-
+from ..constants import SOL_MINT
 from ..domain.models import TokenInfo
+from .http import HttpClient, HttpError
 from .rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-SOL_MINT = "So11111111111111111111111111111111111111112"
 # Screening and browsing tolerate a stale-ish price; EXECUTION does not.
 # A 45s-old mark on a fast-moving token silently flatters or punishes
 # every simulated fill, which would make paper results meaningless for
@@ -31,10 +30,15 @@ CACHE_TTL_SEC = 10.0
 FILL_PRICE_MAX_AGE_SEC = 1.0
 
 
+class MarketDataError(HttpError):
+    pass
+
+
 class MarketDataService:
     def __init__(self) -> None:
-        self._session = requests.Session()
-        self._limiter = RateLimiter(requests_per_second=4.0, burst=8)
+        self._http = HttpClient(
+            DEXSCREENER_BASE, name="dexscreener", error_cls=MarketDataError,
+            limiter=RateLimiter(requests_per_second=4.0, burst=8))
         self._cache: dict[str, tuple[float, TokenInfo | None]] = {}
         self._lock = threading.Lock()
 
@@ -61,16 +65,12 @@ class MarketDataService:
         """Fallback winner finder: SOL-quoted Solana pairs from the search
         endpoint, ranked by 24h price change. Used only when the primary
         trending source is down."""
-        self._limiter.acquire()
         try:
-            response = self._session.get(
-                f"{DEXSCREENER_BASE}/latest/dex/search",
-                params={"q": "SOL"}, timeout=15)
-            response.raise_for_status()
-            pairs = (response.json() or {}).get("pairs") or []
-        except (requests.RequestException, ValueError) as exc:
+            body = self._http.get("/latest/dex/search", params={"q": "SOL"})
+        except MarketDataError as exc:
             logger.warning("winner search failed: %s", exc)
             return []
+        pairs = (body or {}).get("pairs") or []
         winners = {}
         for pair in pairs:
             if pair.get("chainId") != "solana":
@@ -99,15 +99,12 @@ class MarketDataService:
         return ranked[:limit]
 
     def _fetch_token_info(self, mint: str) -> TokenInfo | None:
-        self._limiter.acquire()
         try:
-            response = self._session.get(
-                f"{DEXSCREENER_BASE}/latest/dex/tokens/{mint}", timeout=15)
-            response.raise_for_status()
-            pairs = (response.json() or {}).get("pairs") or []
-        except (requests.RequestException, ValueError) as exc:
+            body = self._http.get(f"/latest/dex/tokens/{mint}")
+        except MarketDataError as exc:
             logger.warning("dexscreener fetch failed for %s: %s", mint, exc)
             return None
+        pairs = (body or {}).get("pairs") or []
 
         best: dict[str, Any] | None = None
         best_liquidity = -1.0

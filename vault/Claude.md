@@ -18,8 +18,11 @@ memory, and the operator relies on them across sessions.
 - **Discovery has no seed-token list** (operator removed it 2026-08-16
   after the old pool-sampling harvested an arb bot). Candidate sources:
   the Solana Tracker PnL leaderboard (`chain.solana_tracker_api_key`,
-  throttled to `discovery.leaderboard_interval_sec`), with the DEX
-  census and winners' holders as the always-available on-chain base.
+  throttled to `filters_solanatracker.interval_sec`), with winners'
+  holders as the always-available on-chain base. **The DEX census was
+  removed 2026-08-19** — it spent a fixed slice of every scan budget to
+  enumerate wallets that are merely ACTIVE, which is the one property a
+  copy trader can find anywhere. Do not reintroduce it.
   Birdeye was removed entirely (operator decision 2026-08-18) — do not
   reintroduce it. Operator requirement (2026-08-17): the service is an
   OPTIONAL accelerator — no key, a rate limit, or an outage must fall
@@ -30,30 +33,47 @@ memory, and the operator relies on them across sessions.
   (by `discovery.replace_margin`), the weakest is auto-retired and
   replaced. Discovery never idles on a full roster. Do not restore the
   roster-full early return.
-- **Chain access is pluggable, public-first.** Public RPC endpoints +
-  DexScreener + Jupiter lite-api, all keyless. A free Helius key in
-  `backend/config.yaml` (chain.helius_api_key) upgrades throughput via
-  `HeliusRpcProvider` automatically. Do not add providers that require
-  paid accounts without asking.
+- **Chain access is routed, public-first (reworked 2026-08-19).** There
+  is ONE `JsonRpcSource` described entirely by config; `chain/router.py`
+  fails over between sources per POLICY (`tracking`, `history`,
+  `metadata`, `broadcast`, `confirm`, `stream`). Adding, reordering or
+  disabling an endpoint is a config edit, never code. Do not add a class
+  per vendor, and do not add providers requiring paid accounts without
+  asking.
+- **Tracking numbers are MEASURED, not chosen.** Cost is
+  `wallets ÷ interval` because public nodes meter by SUB-CALL — a
+  50-address batch costs 50. Measured on publicnode: 10 wallet-calls/s
+  runs clean, 16.7/s throttles within ~40s, and a 100-wallet batch is
+  served in 670 ms. The poll interval is DERIVED from roster size
+  against that ceiling; never hardcode a cadence. Re-measure before
+  changing any of it (probe scripts pattern is in [[Tasks]]).
+- **Helius is not a tracking peer.** It refuses roster-sized batches
+  (50 elements → HTTP 429 in 34 ms) and a heartbeat there would cost
+  ~2.6M credits/month against a 1M allowance. Its jobs are the
+  WebSocket stream, per-trade fetches, and broadcast/confirm.
+- **Broadcast and confirmation must share one source.** A node that
+  never saw our transaction answers `null`, which is indistinguishable
+  from "it never landed" — that wrote TIMEOUT receipts for swaps that
+  were confirming. Use `RoutedProvider.broadcast_session()`.
+- **The cursor is a `(slot, signature)` watermark, never a bare
+  signature.** A signature cannot be compared, so a window that missed
+  it made the old follower treat every entry as fresh and re-copy them.
+  A walk that cannot reach the watermark raises `SourceIncomplete` and
+  the cursor does NOT move: losing sight of trades is recoverable,
+  copying them twice is not.
 - **Strict trader filters** are the shipped defaults (90d history, 200
   trades, 60% win rate, 24h activity, $20M–$5B mcap band, $500k
   liquidity). Loosen only in config, never in code.
-- **Config is split by trading style (operator decision 2026-08-18):**
-  master `config.yaml` holds the mode flags (`dev_mode`, `hft`),
-  credentials and RISK EXPOSURE; `config.hft.yaml` /
-  `config.slow.yaml` hold filters/discovery/follow. `hft: true` picks
-  the HFT profile at boot. Risk stays in the master ON PURPOSE —
-  switching strategy must never change how much money a trade touches.
-  Keep the flags in the master and the active profile in the snapshot:
-  the earlier parallel-file design was reverted precisely because the
-  flag was invisible to the running config.
-- **The HFT profile** (operator's current setting): 7d judgment window
-  (persistence via the 30 active-day nomination floor), 600 trades/day
-  ceiling, hold-time gate off, leaderboard sorted by realized PnL.
-  Operator explicitly accepts service win-rate distortion; judgment =
-  net realized PnL + SHARP. The 2-5s copy latency caveat is recorded in
-  [[Tasks]] — paper PnL of the copies is the arbiter before live is
-  ever considered.
+- **One config file (operator decision 2026-08-19).** `config.yaml` is
+  READ ONLY to the process, so its comments survive; runtime edits from
+  the UI persist to `config.runtime.yaml` and layer on top at startup.
+  One `PUT /api/config` used to `yaml.safe_dump` the whole file and
+  erase every explanation in it. Built-in defaults stay STRICT.
+- **HFT mode is gone (operator decision 2026-08-19): "We are only doing
+  normal trading now."** The `hft` flag, both profile files, all profile
+  machinery and the frontend badge were removed. Do not reintroduce a
+  trading-style switch; if a second style is ever wanted, it is a
+  separate config file the operator points at, not a mode flag.
 - **Long-only, DEX-only, copy-only.** No shorts, no hedges, no
   self-originated trades. Risk math gates everything; a blocked trade is
   declined, never squeezed through.
@@ -105,12 +125,12 @@ memory, and the operator relies on them across sessions.
 - Public RPC is ~2 req/s shared across all daemons via token-bucket rate
   limiters. Qualifying one trader takes hours; that is expected, not a
   bug. The scan banner tells the operator so.
-- **The DEX census is a bot generator by construction** — live DEX flow
+- **Enumerating ACTIVE wallets finds bots, not traders** — live DEX flow
   is dominated by high-frequency bots, so wallets seen repeatedly in it
   are usually bots (measured twice: MVP round, and again 2026-08-18).
-  The leaderboard is NOT the bot source: 85/100 of its top-100 are at
-  human cadence. When "bots blocked" spikes, suspect the census, not the
-  service.
+  This is why the DEX census was deleted 2026-08-19. The leaderboard is
+  NOT the bot source: 85/100 of its top-100 are at human cadence. Select
+  on having been EARLY into something that worked, never on activity.
 - **Trades/day and signatures/day are different metrics, with different
   denominators.** The service's `trades_per_day` is
   `counts.trades / period.tradingDays` — per ACTIVE trading day. The
@@ -128,15 +148,22 @@ memory, and the operator relies on them across sessions.
   It governs the on-chain stream only. Token safety follows it for paper
   wallets but is UNCONDITIONAL for live wallets, and arming no longer
   depends on it at all.
+- **Win rates are FRACTIONS everywhere** (0.55 = 55%), in both
+  `filters_onchain.min_win_rate` and
+  `filters_solanatracker.min_win_rate`; the client converts to percent
+  at the wire. ROI keeps `_pct` (percent). Config load REJECTS a win
+  rate outside 0..1 and an ROI percent under 1 — mixed units once let
+  `0.7` mean 0.7% and seated traders winning one trade in five.
 - **Config sections are named for the stream they govern:**
   `filters_onchain` (stream B) and `filters_solanatracker` (stream A).
 - **TWO STREAMS, TWO RULE SETS** (operator decision 2026-08-18; REVISES
   the earlier "judgment is ONLY our own computed win rate" doctrine).
   *Stream A* `discovery/leaderboard.py`: the service ranked and vetted
   these wallets, so we follow what it returns. Configured ONLY by the
-  `leaderboard` config section. *Stream B* `discovery/onchain.py`:
-  census + winners' holders, nobody vetted them, so `filters` is their
-  admission gate. **Never apply `filters` to stream A** — that coupling
+  `filters_solanatracker` config section. *Stream B*
+  `discovery/onchain.py`: winners' holders, nobody vetted them, so
+  `filters_onchain` is their admission gate.
+  **Never apply `filters_onchain` to stream A** — that coupling
   re-derived the service's judgment with a narrower window and a
   reconstructor blind to multi-hop swaps, and dropped vetted traders.
   Both compete for seats through `discovery/roster.py`.

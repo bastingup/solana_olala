@@ -11,13 +11,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..constants import LAMPORTS_PER_SOL, QUOTE_MINTS, SOL_MINT
 from ..domain.models import ObservedTrade, TradeSide
 
 logger = logging.getLogger(__name__)
 
-WSOL_MINT = "So11111111111111111111111111111111111111112"
-LAMPORTS_PER_SOL = 1_000_000_000
+# Wrapped SOL is the same mint the rest of the system calls SOL_MINT;
+# the local alias kept two names alive for one address.
+WSOL_MINT = SOL_MINT
 MIN_TRADE_SOL = 0.01
+# Floor for a dollar-quoted swap, in units of the stablecoin. Dust
+# transfers are not trades in either denomination.
+MIN_TRADE_USD = 1.0
 
 
 class TradeReconstructor:
@@ -44,25 +49,54 @@ class TradeReconstructor:
 
         moved = {mint: delta for mint, delta in token_deltas.items()
                  if abs(delta) > 1e-9}
-        if len(moved) != 1:
+        # Split the movement into the asset traded and the asset it was
+        # traded against. Requiring the counter-asset to be SOL made every
+        # stablecoin-denominated swap invisible — which is fine for an
+        # entry we simply do not copy, and dangerous for an EXIT, because
+        # we would keep holding a token the trader had already sold.
+        stable_quotes = {mint: delta for mint, delta in moved.items()
+                         if QUOTE_MINTS.get(mint)}
+        traded = {mint: delta for mint, delta in moved.items()
+                  if mint not in QUOTE_MINTS}
+        if len(traded) != 1 or len(stable_quotes) > 1:
             return None
-        mint, token_delta = next(iter(moved.items()))
-        if abs(sol_delta) < MIN_TRADE_SOL:
-            return None
-        if token_delta > 0 and sol_delta < 0:
+        mint, token_delta = next(iter(traded.items()))
+
+        if stable_quotes and abs(sol_delta) < MIN_TRADE_SOL:
+            # Dollar-quoted: exact in USD, unpriceable in SOL without a
+            # rate we would only be guessing at.
+            quote_mint, quote_delta = next(iter(stable_quotes.items()))
+            if abs(quote_delta) < MIN_TRADE_USD:
+                return None
+            counter_delta = quote_delta
+            sol_amount = 0.0
+            price_sol = 0.0
+            quote_amount = abs(quote_delta)
+        else:
+            # A SOL leg is present (possibly alongside a stablecoin leg,
+            # when the route passed through one). SOL is the leg we can
+            # price, so it decides the trade.
+            if abs(sol_delta) < MIN_TRADE_SOL:
+                return None
+            counter_delta = sol_delta
+            sol_amount = abs(sol_delta)
+            price_sol = sol_amount / abs(token_delta)
+            quote_mint = SOL_MINT
+            quote_amount = sol_amount
+
+        if token_delta > 0 and counter_delta < 0:
             side = TradeSide.BUY
-        elif token_delta < 0 and sol_delta > 0:
+        elif token_delta < 0 and counter_delta > 0:
             side = TradeSide.SELL
         else:
             return None
 
-        sol_amount = abs(sol_delta)
-        token_amount = abs(token_delta)
         return ObservedTrade(
             trader=trader, signature=signature, side=side, mint=mint,
-            token_amount=token_amount, sol_amount=sol_amount,
-            price_sol=sol_amount / token_amount,
-            block_time=float(tx.get("blockTime") or 0.0))
+            token_amount=abs(token_delta), sol_amount=sol_amount,
+            price_sol=price_sol,
+            block_time=float(tx.get("blockTime") or 0.0),
+            quote_mint=quote_mint, quote_amount=quote_amount)
 
     def _sol_delta(self, meta: dict[str, Any], trader_index: int) -> float:
         pre = meta.get("preBalances") or []
