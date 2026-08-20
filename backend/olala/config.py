@@ -158,6 +158,12 @@ class TrackingConfig:
     # whenever the stream is proven live.
     tick_sec: float = 1.0
     signatures_per_poll: int = 30
+    # Entries per catch-up page, and per single-wallet poll. A public
+    # node charges per CALL, not per signature, and returns up to 1000
+    # for the same price — so this only ever costs response size, and
+    # buys the lookback that keeps a busy wallet from outrunning its
+    # watermark. 1000 is the API maximum.
+    catchup_signatures: int = 1000
     max_transactions_per_cycle: int = 60
     # A signal older than this may not OPEN a position: after an outage
     # the backlog would otherwise buy into trades already exited. Exits
@@ -266,9 +272,12 @@ class SolanaTrackerFilters:
     # stay inside the service tier (free tier: 10k requests/month).
     pages: int = 3
     interval_sec: int = 3600
-    # NOT a quality judgment — a mechanical limit. We cannot copy, or
-    # afford, a wallet trading faster than this. 0 disables the cap.
-    max_trades_per_day: float = 2000.0
+    # NOT a quality judgment — a mechanical limit: the speed past which
+    # we can neither copy a trader nor afford the RPC to try. 0 disables
+    # the cap. MEASURED against the live board: a cap of 40 discarded 62
+    # of 100 qualified wallets, including 97%-win traders active minutes
+    # earlier, for no gain in median win rate.
+    max_trades_per_day: float = 400.0
 
 
 @dataclass

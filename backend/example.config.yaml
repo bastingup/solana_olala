@@ -77,6 +77,12 @@ tracking:
   min_interval_sec: 5.0
   tick_sec: 1.0
   signatures_per_poll: 30
+  # Lookback when catching up, and when polling a single wallet.
+  # getSignaturesForAddress charges per CALL, not per signature,
+  # and returns up to 1000 for the same price — a shallow walk
+  # back is what let busy wallets outrun their watermark and go
+  # permanently blind.
+  catchup_signatures: 1000
   max_transactions_per_cycle: 60
   max_signal_age_sec: 90.0
   price_mark_interval_sec: 20
@@ -126,7 +132,9 @@ filters_solanatracker:
   min_win_rate: 0.0
   pages: 3
   interval_sec: 3600
-  max_trades_per_day: 2000.0
+  # The speed past which a trader cannot be copied at our latency.
+  # Measured: 400 keeps 94 of 100 qualified wallets; 40 kept only 38.
+  max_trades_per_day: 400.0
 
 discovery:
   scan_interval_sec: 180

@@ -41,7 +41,12 @@ memory, and the operator relies on them across sessions.
   per vendor, and do not add providers requiring paid accounts without
   asking.
 - **Tracking numbers are MEASURED, not chosen.** Cost is
-  `wallets ÷ interval` because public nodes meter by SUB-CALL — a
+  `wallets ÷ interval` because public nodes meter by SUB-CALL, NOT by
+  HTTP request. This is counter-intuitive and was assumed the wrong way
+  round in the first plan draft, which is why that plan was rejected and
+  rewritten. Controlled proof (2026-08-20), holding request rate fixed
+  at exactly 1 POST/s: 1 wallet per request ran 8/8 clean, 100 wallets
+  per request throttled 3 of 8. Same requests, 100x the sub-calls. A
   50-address batch costs 50. Measured on publicnode: 10 wallet-calls/s
   runs clean, 16.7/s throttles within ~40s, and a 100-wallet batch is
   served in 670 ms. The poll interval is DERIVED from roster size
@@ -63,6 +68,15 @@ memory, and the operator relies on them across sessions.
   reported — and only for trades that landed while the stream was
   answerable (after it had proven itself, and not across a reconnect),
   or every restart would blame it for downtime.
+- **A watermark that cannot advance is as dangerous as one that
+  advances wrongly.** The walk must page until it REACHES the watermark,
+  never stopping because a page held no fresh work — a restart leaves
+  every recent signature already in `processed`, and stopping there froze
+  the marker while the chain moved on, until the wallet was wedged
+  permanently. And an unbridgeable gap must RE-ARM, not wedge: skipping a
+  gap is safe (the marker never moves backwards), while going blind just
+  fails quietly. Measured 2026-08-20: 858 gap errors, three wallets blind
+  for eighteen hours, one copied trade overnight.
 - **The cursor is a `(slot, signature)` watermark, never a bare
   signature.** A signature cannot be compared, so a window that missed
   it made the old follower treat every entry as fresh and re-copy them.

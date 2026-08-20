@@ -53,7 +53,14 @@ class SourceHealthDaemon(Daemon):
             if not source.enabled:
                 continue
             interval = self._probe_interval
-            if getattr(source, "metered", False):
+            # A source that is ANSWERING can be left alone; a source that
+            # just failed is the one whose status is least certain, so it
+            # is re-checked on the short interval even when metered. One
+            # getHealth call is nothing next to showing a healthy
+            # endpoint as dead for five minutes after it recovered —
+            # which is exactly what a transient "request deprioritized"
+            # from Helius did.
+            if source.stats.responding and getattr(source, "metered", False):
                 interval *= METERED_PROBE_MULTIPLIER
             if now - source.stats.last_contact_at < interval:
                 # Recently exercised or recently probed: already known.

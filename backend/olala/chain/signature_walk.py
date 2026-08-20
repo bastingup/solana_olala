@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 #: Pages of history to walk back before declaring a gap unbridgeable.
 DEFAULT_MAX_PAGES = 5
+#: Entries per catch-up page. ``getSignaturesForAddress`` caps at 1000
+#: and costs the same as asking for one, so walking back shallowly is
+#: pure downside.
+DEFAULT_CATCHUP_PAGE_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -140,6 +144,7 @@ def collect_fresh(fetch: Callable[..., list[dict[str, Any]]],
                   address: str, watermark: Watermark, *,
                   processed: Mapping[str, int] | None = None,
                   page_size: int = 30,
+                  catchup_page_size: int = DEFAULT_CATCHUP_PAGE_SIZE,
                   max_pages: int = DEFAULT_MAX_PAGES,
                   first_page: list[dict[str, Any]] | None = None
                   ) -> WalkResult:
@@ -157,8 +162,15 @@ def collect_fresh(fetch: Callable[..., list[dict[str, Any]]],
     page = (first_page if first_page is not None
             else fetch(address, page_size, None))
     result = select_fresh(page, watermark, processed)
-    if result.complete or not result.fresh:
+    if result.complete:
         return result
+    # NOT `or not result.fresh`. An empty result means there is no WORK
+    # here, which says nothing about whether we reached the watermark —
+    # every entry may simply have been handled already. Stopping on it
+    # left the watermark frozen while reality moved on, so the gap grew
+    # every cycle until it passed the lookback and the wallet was wedged
+    # for good. Measured live: watermarks 87,000 slots adrift, three
+    # wallets permanently blind, 858 unbridgeable-gap errors.
 
     collected = list(result.fresh)
     newest = result.newest
@@ -167,7 +179,11 @@ def collect_fresh(fetch: Callable[..., list[dict[str, Any]]],
 
     while pages < max_pages and oldest_signature:
         pages += 1
-        page = fetch(address, page_size, oldest_signature)
+        # Catch-up pages ask for far more than the first one. A public
+        # node charges per CALL, not per signature, and returns up to a
+        # thousand entries for the same price — so a shallow walk back
+        # buys nothing and risks exactly the wedge described above.
+        page = fetch(address, catchup_page_size, oldest_signature)
         if not page:
             # Nothing older, and we still never met the watermark. The
             # marker is a transaction of THIS address, so its absence

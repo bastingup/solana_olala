@@ -208,10 +208,22 @@ def test_a_window_that_misses_the_watermark_does_not_replay(
     sweep(tracker)
 
     assert tracker.status.gaps_detected == 1
-    assert queue.signals == []           # nothing dispatched over the gap
-    # The watermark did NOT move: losing sight of trades is recoverable,
-    # copying them twice is not.
-    assert db.load_watermarks()[TRADER] == (100, "s1")
+    # Nothing is dispatched ACROSS the gap — the span is unproven, so
+    # replaying it could copy the same trade twice.
+    assert queue.signals == []
+    # But the wallet is re-armed rather than left wedged. Production ran
+    # the other way for eighteen hours: three wallets sat permanently
+    # blind behind 858 of these errors, copying nothing ever again.
+    # Skipping the gap is safe; going blind only looks safe.
+    assert tracker.status.gap_rearmed == 1
+    slot, signature = db.load_watermarks()[TRADER]
+    assert slot == 930 and signature == "n30"
+
+    # And the skipped span is never revisited: the marker only moves
+    # forward, so nothing inside the gap is copied later either.
+    sweep(tracker)
+    assert queue.signals == []
+    assert db.load_watermarks()[TRADER] == (930, "n30")
 
 
 def test_processed_signatures_survive_a_restart(db, bus, config_store):

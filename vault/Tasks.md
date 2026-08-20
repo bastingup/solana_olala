@@ -263,7 +263,150 @@ timers coincided. Silence is not evidence — a quiet market is silent too.
       Worth revisiting with them if they want literal hues added to
       DESIGN.md.
 
+## Fixed — THE FROZEN WATERMARK: why nothing was copied overnight (2026-08-20)
+
+Operator ran it overnight: one paper wallet moved 10 -> 9.99 SOL, the
+other two untouched, while the Solana Tracker leaderboard showed followed
+traders active minutes earlier. Asked whether copy was broken or the
+token risk filters were too strict, and to settle it with DATA.
+
+### Measured, not guessed
+
+- Live counters (`/api/state`): `signals_emitted: 4`, **`gaps_detected:
+  858`**, `polls_ok: 35922`, `polls_failed: 0`. Tracking was healthy and
+  fetching; it just was not producing signals.
+- Watermarks were 18,000–165,000 slots adrift (a slot is ~400 ms, so up
+  to ~18 HOURS), on 8 of 10 sampled wallets.
+- 4 followed wallets had swapped within the hour; the newest 12 minutes
+  before the investigation. The traders were trading. We were not
+  copying.
+
+### The bug — one clause in `collect_fresh`
+
+    if result.complete or not result.fresh:   # <- `or not result.fresh`
+        return result
+
+An empty result means there is no WORK in this page. It says NOTHING
+about whether the walk reached the watermark — every entry may simply
+have been handled already, which is exactly what a restart leaves behind
+(`processed_signatures` is persisted on purpose). So the walk stopped
+early, the watermark never advanced, and the gap grew every single cycle
+until it passed the 150-signature lookback. After that the wallet was
+wedged **forever**: 858 unbridgeable-gap errors, three wallets blind.
+
+Traced end to end on a live wallet: every recent signature was above the
+watermark, already in `processed`, several were real swaps — and the
+marker had not moved in ten hours.
+
+### Fixes
+
+- [x] Page back whenever the watermark has not been reached, regardless
+      of whether the page held fresh work.
+- [x] A COMPLETE walk advances the watermark even when it dispatched
+      nothing. Leaving it put was the other half of the freeze.
+- [x] Catch-up pages ask for 1000 entries, not 30. A public node charges
+      per CALL, not per signature, and returns up to 1000 for the same
+      price — a shallow walk back was pure downside. Round-robin's first
+      page is deep too (one call per wallet either way); the batch sweep
+      stays shallow because 42 wallets share one response body.
+- [x] **An unbridgeable gap re-arms instead of wedging forever**
+      (`gap_rearmed` counter, surfaced in the UI). Skipping a gap is
+      safe — the marker never moves backwards, so nothing is copied
+      twice. Going permanently blind only LOOKS safe.
+
+Result on the live database, one pass over all 42 wallets: 29 watermarks
+advanced, 1 gap recovered by re-arming, 5 signals dispatched. After the
+pass, **37 of 42 watermarks sit exactly on the newest transaction**
+(previously tens of thousands of slots adrift).
+
+### The token-risk suspicion was FALSIFIED
+
+Operator suspected the market-cap filter and proposed lowering it to $5k.
+Measured against the tokens the followed wallets actually traded:
+
+- `dev_mode: false` + paper wallets means the safety screen **never
+  runs** — `if config.dev_mode or not wallet.is_paper`. The
+  `filters_onchain` MC/liquidity gates were not in the path at all.
+- The risk engine APPROVED 10 of 12 tokens at full size, including one at
+  **$1,976 market cap / $2,129 liquidity**. The two refusals were
+  legitimate: one token had no market data, one had $6 of liquidity.
+
+Lowering the market cap would have changed nothing. Left as is.
+
+### Also confirmed working
+
+- Copy itself is not broken: the one trade that did land opened a
+  position and closed it on `trader_exit`, booking -0.0057 SOL.
+- The reconstructor correctly ignores plain SOL transfers (checked a
+  -29.98 SOL transaction: `system` program, zero token balances). The low
+  swap rate per signature is genuine — these wallets do a lot of
+  non-trading activity.
+
+## Fixed — why the leaderboard's active traders were never copied (2026-08-20)
+
+Operator: "sort by realized on their website and many wallets traded
+minutes ago, yet we didn't. I promise you we have a bug." Correct on
+both counts — two separate causes, found by fetching the live board and
+replaying real trades through the real engine.
+
+### Cause 1 — our roster was the SLOWEST traders on the board
+
+Live comparison, our exact API call vs the website's raw
+`sort=realized` board: **overlap 1 of 100**, and we followed ZERO of the
+website's top 100.
+
+Half of that is correct and by design: the website's raw top-by-realized
+is dominated by MEV machines — 9,305 / 7,801 / 3,246 trades per day, and
+several with 0% or 25% win rates. Exactly the wallets the operator
+complained about getting in an earlier session.
+
+The other half was the bug. Of the 100 wallets OUR filtered call
+returned (win rates 73-98%, $300k-$7M realized), **62 were discarded by
+`max_trades_per_day: 40`** — including 97.5%-win and 96.7%-win traders
+that had traded 43 and 137 minutes earlier. What survived were the
+slowest wallets on the board, which is why the system sat idle.
+
+That 40 was a leftover from the DELETED slow/swing profile. When HFT
+mode was removed and `config.slow.yaml` became the single config, the
+value came with it and nothing re-examined whether it still made sense.
+
+Measured trade-off across the live board:
+
+| cap | survive | median win% | one trade every |
+|---|---|---|---|
+| 40 | 38 | 91.7% | 36.0 min |
+| 200 | 84 | 89.6% | 7.2 min |
+| **400** | **94** | **89.3%** | **3.6 min** |
+| 1500 | 99 | 88.9% | 1.0 min |
+
+- [x] Operator chose **400**. 94 of 100 survive at an unchanged median
+      win rate, the 3,000-9,000/day machines stay excluded, and a trade
+      every ~4 minutes is far slower than our detection (~1s via the push
+      stream, 42s worst case). Verified after the change: 5 of the top 12
+      new candidates had traded within the hour.
+
+### Cause 2 — the frozen watermarks (see the entry above)
+
+Even the traders we DID follow were not being detected, because the
+watermarks had frozen. Both causes had to be fixed for anything to copy.
+
+### The engine was never the problem
+
+Replayed all 203 real trades those wallets made in 24h through a real
+`TradingEngine` with a real portfolio: **16 positions opened, 30 trades
+executed, 8 closed**. The 123 rejections were almost all "per-position
+ceiling" AFTER the 10 SOL wallet had saturated — correct behaviour.
+Token safety, sizing and the copy path all work.
+
 ## Open — from this rework
+
+- [ ] `LeaderboardSource.harvest` skips any address already in the
+      registry, whatever its status — so a wallet once rejected as
+      "roster full" can never be reconsidered, even when the roster
+      weakens or the wallet improves. Not blocking today (58 of the 100
+      current candidates are new, and none of the top 30 are blocked),
+      but it will silently shrink the candidate pool over time.
+
 
 - [ ] `TraderProfile` is still mutable and handed out live by the
       registry; callers mutate it outside the lock while Flask threads

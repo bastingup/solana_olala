@@ -277,8 +277,15 @@ function updateTrackingLine(state) {
   }
   if (t.gaps_detected) {
     parts.push(`<span class="warn" title="A history gap could not be `
-      + `bridged, so the cursor did not advance. Nothing was copied twice.">`
+      + `bridged in one walk. Nothing is copied across an unproven span.">`
       + `gaps <b>${t.gaps_detected}</b></span>`);
+  }
+  if (t.gap_rearmed) {
+    parts.push(`<span class="warn" title="Wallets re-armed at their newest `
+      + `transaction after a gap too large to bridge. Trades inside the gap `
+      + `were skipped — but the wallet is watched again rather than left `
+      + `blind, which is how three wallets once went eighteen hours without `
+      + `copying anything.">re-armed <b>${t.gap_rearmed}</b></span>`);
   }
   if (t.legacy_rearmed) {
     parts.push(`<span class="warn" title="Cursors written before slots were `

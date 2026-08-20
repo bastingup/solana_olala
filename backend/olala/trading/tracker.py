@@ -93,6 +93,10 @@ class TrackingStatus:
     gaps_detected: int = 0
     #: Trades the poll caught that the push stream never reported.
     stream_misses: int = 0
+    #: Wallets re-armed after a gap that could not be bridged. Each one
+    #: means trades were skipped — and that the wallet is being watched
+    #: again rather than left blind.
+    gap_rearmed: int = 0
     #: Pre-slot cursors that were still visible and simply learned their
     #: slot. Nothing was lost.
     legacy_upgraded: int = 0
@@ -138,6 +142,7 @@ class TrackingStatus:
             "stale_entries_blocked": self.stale_entries_blocked,
             "gaps_detected": self.gaps_detected,
             "stream_misses": self.stream_misses,
+            "gap_rearmed": self.gap_rearmed,
             "legacy_upgraded": self.legacy_upgraded,
             "legacy_rearmed": self.legacy_rearmed,
             "batch_source": self.batch_source,
@@ -527,7 +532,14 @@ class WalletTracker(Daemon):
             walk = collect_fresh(
                 self._fetch_signatures, address, watermark,
                 processed=processed,
-                page_size=config.signatures_per_poll,
+                # A batched sweep pays for its first page by RESPONSE
+                # SIZE — 42 wallets share one body — so it stays shallow.
+                # Round-robin spends a whole call on one wallet, and that
+                # call returns up to a thousand entries for the same
+                # price, so asking for thirty of them is pure waste.
+                page_size=(config.signatures_per_poll if first_page is not None
+                           else config.catchup_signatures),
+                catchup_page_size=config.catchup_signatures,
                 first_page=first_page)
         except SourceIncomplete as exc:
             if _is_legacy(watermark):
@@ -538,11 +550,19 @@ class WalletTracker(Daemon):
                 # copied: skipping is recoverable, duplicating is not.
                 self._rearm_legacy(address, first_page)
                 return
-            # The gap could not be bridged. The watermark stays exactly
-            # where it is: losing sight of trades is recoverable, copying
-            # them twice is not.
+            # The gap could not be bridged even by the deep walk. The
+            # ONLY options are to re-arm at the newest transaction, or to
+            # never copy this trader again — and the second is what
+            # actually happened in production: three wallets sat blind
+            # for eighteen hours behind 858 of these errors.
+            #
+            # Re-arming skips whatever sits in the gap, which is safe;
+            # the watermark never moves backwards, so nothing is copied
+            # twice. Being permanently blind is not safe, it is just
+            # quiet.
             self.status.gaps_detected += 1
             self._note_error(str(exc))
+            self._rearm_after_gap(address, first_page)
             return
 
         with self._lock:
@@ -560,6 +580,13 @@ class WalletTracker(Daemon):
             self._advance(address, walk.matched)
             self.status.legacy_upgraded += 1
         if not walk.fresh:
+            # Nothing to copy — but if the walk REACHED the watermark,
+            # everything above it is accounted for, so the marker must
+            # move. Leaving it put is what froze watermarks in place
+            # while the chain moved on, growing the gap every cycle
+            # until the wallet was wedged beyond any lookback.
+            if walk.complete and walk.newest is not None:
+                self._advance(address, walk.newest)
             return
 
         budget = config.max_transactions_per_cycle
@@ -586,6 +613,21 @@ class WalletTracker(Daemon):
 
         if last_handled is not None:
             self._advance(address, last_handled)
+
+    def _rearm_after_gap(self, address: str,
+                         first_page: list[dict[str, Any]] | None) -> None:
+        """Re-arm at the newest transaction after an unbridgeable gap."""
+        page = first_page or self._fetch_signatures(address, 1, None)
+        if not page:
+            return
+        newest = page[0]
+        logger.warning(
+            "%s: the gap to the watermark could not be bridged; re-arming "
+            "at slot %s. Trades inside the gap are NOT copied — but the "
+            "wallet is watched again, which beats being blind to it.",
+            address[:8], newest.get("slot"))
+        self.status.gap_rearmed += 1
+        self._advance(address, newest)
 
     def _rearm_legacy(self, address: str,
                       first_page: list[dict[str, Any]] | None) -> None:

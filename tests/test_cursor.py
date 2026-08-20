@@ -178,3 +178,66 @@ def test_watermark_arming_and_advance():
     assert Watermark(slot=5).armed is True
     advanced = Watermark().advanced_to(sig("z", 900))
     assert advanced.slot == 900 and advanced.signature == "z"
+
+
+# -- the frozen-watermark bug ---------------------------------------------
+#
+# Found in production after an overnight run: watermarks 87,000 slots
+# adrift, three wallets permanently blind, 858 unbridgeable-gap errors,
+# and one copied trade in ten hours.
+#
+# The walk stopped paging when a page contained no FRESH work. But "no
+# work here" says nothing about whether the watermark was reached — every
+# entry may simply have been handled already. So the marker froze while
+# the chain moved on, the gap grew every cycle, and once it passed the
+# lookback the wallet was wedged for good.
+
+def test_a_page_of_already_processed_entries_still_pages_to_the_watermark():
+    history = [sig(f"s{i:02d}", 100 + i) for i in range(20, 0, -1)]
+    history.append(sig("mark", 100))
+    pager = Pager(history)
+    # Everything in the first page has already been handled.
+    processed = {f"s{i:02d}": 100 + i for i in range(20, 15, -1)}
+
+    result = collect_fresh(pager, "W", Watermark(slot=100, signature="mark"),
+                           processed=processed, page_size=5, max_pages=10)
+
+    # It must reach the watermark, so the caller can advance it.
+    assert result.complete
+    # And still surface the entries that were NOT already handled.
+    assert names(result.fresh) == [f"s{i:02d}" for i in range(1, 16)]
+
+
+def test_an_entirely_processed_history_still_reaches_the_watermark():
+    """The exact production shape: every recent signature above the
+    watermark had been handled, so the walk returned nothing and the
+    marker never moved again."""
+    history = [sig(f"s{i:02d}", 100 + i) for i in range(20, 0, -1)]
+    history.append(sig("mark", 100))
+    processed = {f"s{i:02d}": 100 + i for i in range(20, 0, -1)}
+
+    result = collect_fresh(Pager(history), "W",
+                           Watermark(slot=100, signature="mark"),
+                           processed=processed, page_size=5, max_pages=10)
+
+    assert result.complete
+    assert result.fresh == []
+    assert result.newest["signature"] == "s20"   # so the caller can advance
+
+
+def test_catch_up_pages_ask_for_far_more_than_the_first_page():
+    """A public node charges per CALL, not per signature, and returns up
+    to 1000 for the same price — a shallow walk back buys nothing."""
+    history = [sig(f"s{i:03d}", 100 + i) for i in range(300, 0, -1)]
+    history.append(sig("mark", 100))
+    pager = Pager(history)
+
+    collect_fresh(pager, "W", Watermark(slot=100, signature="mark"),
+                  page_size=30, catchup_page_size=1000, max_pages=5)
+
+    limits = [limit for _, limit, _ in pager.calls]
+    assert limits[0] == 30            # the cheap first look
+    assert all(limit == 1000 for limit in limits[1:])
+    # 300 signatures of lookback used to need 10 pages of 30 and failed
+    # at 5; one deep page covers it.
+    assert len(pager.calls) == 2
