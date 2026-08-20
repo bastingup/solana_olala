@@ -594,6 +594,37 @@ current numbers for every wallet we know.
 median 30-day volume $11,930, median 26 trades/day, 18 traded within the
 hour. Top seats run 94-97% win rates on $57k-$662k volume.
 
+## Measured — expected trade rate, and why the config is already open (2026-08-20)
+
+Operator wanted ~50 trades/day and asked whether the config needed
+loosening. Measured against the live board and live chain instead of
+tuning blind.
+
+    seated roster (42):        ~280 real BUYS/day  (sampled on chain, 6h)
+    conversion through gates:   29%
+    expected:                   ~81 trades/day
+
+Above target, so nothing needed loosening. More usefully, **loosening
+would not have worked**: of 16 real buys, 12 were into pools with
+literally $0 liquidity, and raising `max_liquidity_fraction` from 1% to
+10% changes the tradable count not at all (4/16 either way) — ten
+percent of zero is still zero. These traders buy at launch, before the
+pool has depth a price feed can see.
+
+Also measured: sells outnumber buys roughly 4:1 on this roster (79 vs
+20 in six hours). They are distributing, and a sell for a position we
+never opened is a no-op — which is why a freshly-armed roster looks
+quiet before it looks busy.
+
+- [x] **Seats are freed when a trader falls off the qualified board.**
+      Only wallets ON the board get re-scored, so a seated trader that
+      went dormant or stopped clearing the bars kept its seat AND its
+      admission-day score indefinitely, copying nothing. Over a
+      multi-day run that turns the roster into a museum. Retirement
+      needs `ABSENCES_BEFORE_RETIREMENT` (3) consecutive missed sweeps —
+      one absence is as likely a service hiccup as a real change, and
+      evicting on it would churn the roster on every bad API minute.
+
 ## Open — from this rework
 
 - [ ] The roster's realized-PnL winners trade ultra-thin pump.fun pools

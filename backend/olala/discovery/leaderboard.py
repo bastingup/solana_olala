@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "Solana Tracker PnL leaderboard"
 
+# Sweeps a seated trader may be missing from the qualified board before
+# losing its seat. One absence is as likely to be a service hiccup as a
+# real change; acting on it would churn the roster on every bad minute.
+ABSENCES_BEFORE_RETIREMENT = 3
+
 
 class LeaderboardSource:
     """Fetches the board on an interval and seats what it returns."""
@@ -48,6 +53,9 @@ class LeaderboardSource:
         self._roster = roster
         self._counters = counters
         self._last_poll_at = 0.0
+        # Consecutive sweeps a followed trader has been absent from the
+        # qualified board.
+        self._absences: dict[str, int] = {}
         # Board position per nominee (higher = better), so the on-chain
         # deep-scan queue can still prioritise service-known names.
         self.rank: dict[str, float] = {}
@@ -132,13 +140,50 @@ class LeaderboardSource:
             else:
                 watchlisted += 1
 
+        retired = self._retire_absent(config, {e["address"] for e in entries})
+
         if followed:
             self._bus.publish("discovery_scan", {
                 "source": SOURCE_NAME, "new_candidates": followed})
         logger.info("leaderboard: %d names qualified (sort=%s), %d seated, "
-                    "%d held on the watchlist", total, board.sort, followed,
-                    watchlisted)
+                    "%d held on the watchlist, %d retired for falling off",
+                    total, board.sort, followed, watchlisted, retired)
         return followed
+
+    def _retire_absent(self, config, qualified: set[str]) -> int:
+        """Free seats held by traders that no longer qualify.
+
+        Only wallets ON the board get re-scored, so a seated trader that
+        drops off it — went dormant, slowed down, stopped clearing the
+        volume bar — would otherwise keep its seat and its admission-day
+        score indefinitely, copying nothing. Over a multi-day run that
+        silently converts the roster into a museum.
+
+        Absence is counted over consecutive sweeps rather than acted on
+        at once: one missing sweep is as likely to be a service hiccup
+        as a real change, and evicting on it would churn the roster
+        every time the API had a bad minute.
+        """
+        retired = 0
+        for profile in self._roster.followed():
+            address = profile.address
+            if address in qualified:
+                self._absences.pop(address, None)
+                continue
+            missed = self._absences.get(address, 0) + 1
+            self._absences[address] = missed
+            if missed < ABSENCES_BEFORE_RETIREMENT:
+                continue
+            profile.status = TraderStatus.RETIRED
+            profile.rejection_reason = (
+                f"no longer on the qualified board ({missed} sweeps)")
+            self._registry.update(profile, event="trader_retired")
+            self._absences.pop(address, None)
+            retired += 1
+            logger.info("retired %s…: off the qualified board for %d "
+                        "sweeps — the seat goes to someone trading",
+                        address[:8], missed)
+        return retired
 
     def _refresh(self, profile, entry: dict, score: float) -> None:
         """Bring a known trader's score and stats up to date."""

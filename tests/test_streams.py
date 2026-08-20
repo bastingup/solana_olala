@@ -484,3 +484,55 @@ def test_dormant_wallets_are_refused(tmp_path, db, bus):
     daemon.leaderboard.harvest(store.config)
     assert registry.get(stale["address"]) is None
     assert registry.get(fresh["address"]) is not None
+
+
+def test_a_seat_is_freed_when_a_trader_falls_off_the_board(tmp_path, db, bus):
+    """Only wallets ON the board get re-scored, so a seated trader that
+    drops off it would otherwise keep its seat and its admission-day
+    score forever — over a multi-day run the roster becomes a museum."""
+    from olala.discovery.leaderboard import ABSENCES_BEFORE_RETIREMENT
+
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 2\n")
+    keeper, leaver = nominee(0, tpd=10.0), nominee(1, tpd=10.0)
+    tracker = FakeTracker([keeper, leaver])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+    daemon.leaderboard.harvest(store.config)
+    assert len(registry.by_status(TraderStatus.FOLLOWED)) == 2
+
+    # `leaver` stops qualifying — it simply is not on the board any more.
+    tracker.traders = [keeper]
+    for sweep in range(ABSENCES_BEFORE_RETIREMENT):
+        daemon.leaderboard._last_poll_at = 0.0
+        daemon.leaderboard.harvest(store.config)
+        if sweep < ABSENCES_BEFORE_RETIREMENT - 1:
+            # One missing sweep is as likely a service hiccup as a real
+            # change, so the seat is not taken away on the first miss.
+            assert registry.get(leaver["address"]).status \
+                is TraderStatus.FOLLOWED
+
+    assert registry.get(leaver["address"]).status is TraderStatus.RETIRED
+    assert registry.get(keeper["address"]).status is TraderStatus.FOLLOWED
+
+
+def test_a_brief_absence_does_not_cost_a_seat(tmp_path, db, bus):
+    """A service hiccup must not churn the roster."""
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 2\n")
+    keeper, blinker = nominee(0, tpd=10.0), nominee(1, tpd=10.0)
+    tracker = FakeTracker([keeper, blinker])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+    daemon.leaderboard.harvest(store.config)
+
+    tracker.traders = [keeper]                    # one bad sweep
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon.leaderboard.harvest(store.config)
+
+    tracker.traders = [keeper, blinker]           # back again
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon.leaderboard.harvest(store.config)
+
+    tracker.traders = [keeper]                    # and away once more
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon.leaderboard.harvest(store.config)
+
+    # The counter reset when it reappeared, so it keeps its seat.
+    assert registry.get(blinker["address"]).status is TraderStatus.FOLLOWED
