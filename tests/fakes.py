@@ -91,15 +91,28 @@ class FakeTracker:
     def top_traders(self, window_days=90, limit=100, min_trades=20,
                     min_active_days=0, sort="win_percentage",
                     max_trades_per_day=None, max_pages=1,
-                    min_roi_pct=0.0, min_win_rate=0.0):
+                    min_roi_pct=0.0, min_win_rate=0.0,
+                    page_size=500, min_avg_buy_usd=0.0,
+                    max_last_trade_age_sec=0.0, min_volume_usd=0.0,
+                    require_closed_trades=False):
         self.calls += 1
+        self.last_params = {
+            "limit": limit, "page_size": page_size, "max_pages": max_pages,
+            "min_avg_buy_usd": min_avg_buy_usd,
+            "max_last_trade_age_sec": max_last_trade_age_sec,
+        }
         if self.fail:
             from olala.chain.solana_tracker import SolanaTrackerError
             raise SolanaTrackerError("scripted failure")
+        # Mirror the real client: every ceiling is applied client-side
+        # from payload data, so tests see the same shape of result.
+        import time as _time
+        from olala.chain.solana_tracker import _tradable
+        now = _time.time()
         kept = [t for t in self.traders
-                if max_trades_per_day is None
-                or t.get("trades_per_day") is None
-                or t["trades_per_day"] <= max_trades_per_day]
+                if _tradable(t, max_trades_per_day, min_avg_buy_usd,
+                             max_last_trade_age_sec, now, min_volume_usd,
+                             require_closed_trades)]
         return kept[:limit]
 
 

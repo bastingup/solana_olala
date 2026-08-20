@@ -243,11 +243,29 @@ def test_liquidity_cap_counts_all_wallets(db, bus, config_store):
     exposure = WalletExposure(
         wallet_id="w1", cash_sol=100.0, equity_sol=100.0,
         open_positions=0, invested_in_mint_sol=0.0,
-        fleet_invested_in_mint_sol=0.48)  # other wallets nearly filled it
+        # Other wallets have all but filled the pool's 1% allowance.
+        fleet_invested_in_mint_sol=0.4999)
     verdict = RiskEngine().evaluate_entry(
         config_store.config, token, exposure, is_resize=False)
     assert not verdict.approved
     assert "liquidity" in verdict.reason
+
+
+def test_liquidity_cap_sizes_down_before_it_refuses(db, bus, config_store):
+    """The fleet's share of a pool clamps the order rather than killing
+    it — a small remaining allowance is a small trade."""
+    from olala.risk.engine import WalletExposure
+
+    token = make_token(liquidity_usd=10_000.0, price_usd=1.0,
+                       price_sol=0.005)  # 1% of pool ~ 0.5 SOL
+    exposure = WalletExposure(
+        wallet_id="w1", cash_sol=100.0, equity_sol=100.0,
+        open_positions=0, invested_in_mint_sol=0.0,
+        fleet_invested_in_mint_sol=0.45)
+    verdict = RiskEngine().evaluate_entry(
+        config_store.config, token, exposure, is_resize=False)
+    assert verdict.approved
+    assert verdict.size_sol == pytest.approx(0.05, abs=1e-6)
 
 
 def test_portfolio_exposure_reports_fleet_total(db, bus, config_store,

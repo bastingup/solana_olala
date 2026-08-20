@@ -30,10 +30,18 @@ def budget_for(store):
     return RpcBudget(store.config.discovery.rpc_calls_per_scan)
 
 
-def nominee(i=0, win_rate=0.7, trades=400, tpd=20.0):
+def nominee(i=0, win_rate=0.7, trades=400, tpd=20.0, avg_buy_usd=500.0,
+            last_trade_at=None, volume_usd=250_000.0, closed_trades=200):
+    """A board entry. Defaults are QUALIFIED and TRADABLE — real volume,
+    closed round trips, a recent last trade — so a test about seating is
+    not silently emptied by the quality gates."""
     return {"address": f"Trusted{i:02d}111111111111111111111111111111",
             "win_rate": win_rate, "pnl_usd": 100000.0 - i,
-            "trade_count": trades, "trades_per_day": tpd}
+            "trade_count": trades, "trades_per_day": tpd,
+            "avg_buy_usd": avg_buy_usd, "volume_usd": volume_usd,
+            "closed_trades": closed_trades,
+            "last_trade_at": (time.time() if last_trade_at is None
+                              else last_trade_at)}
 
 
 class RecordingTracker(FakeTracker):
@@ -46,16 +54,25 @@ class RecordingTracker(FakeTracker):
     def top_traders(self, window_days=90, limit=100, min_trades=20,
                     min_active_days=0, sort="win_percentage",
                     max_trades_per_day=None, max_pages=1,
-                    min_roi_pct=0.0, min_win_rate=0.0):
+                    min_roi_pct=0.0, min_win_rate=0.0,
+                    page_size=500, min_avg_buy_usd=0.0,
+                    max_last_trade_age_sec=0.0, min_volume_usd=0.0,
+                    require_closed_trades=False):
         self.params = {"window_days": window_days, "min_trades": min_trades,
                        "min_active_days": min_active_days, "sort": sort,
                        "max_trades_per_day": max_trades_per_day,
                        "max_pages": max_pages, "min_roi_pct": min_roi_pct,
-                       "min_win_rate": min_win_rate}
-        return super().top_traders(window_days, limit, min_trades,
-                                   min_active_days, sort,
-                                   max_trades_per_day, max_pages,
-                                   min_roi_pct, min_win_rate)
+                       "min_win_rate": min_win_rate, "limit": limit,
+                       "page_size": page_size,
+                       "min_avg_buy_usd": min_avg_buy_usd,
+                       "max_last_trade_age_sec": max_last_trade_age_sec,
+                       "min_volume_usd": min_volume_usd,
+                       "require_closed_trades": require_closed_trades}
+        return super().top_traders(
+            window_days, limit, min_trades, min_active_days, sort,
+            max_trades_per_day, max_pages, min_roi_pct, min_win_rate,
+            page_size, min_avg_buy_usd, max_last_trade_age_sec,
+            min_volume_usd, require_closed_trades)
 
 
 # -- STREAM SEPARATION ----------------------------------------------------
@@ -367,3 +384,103 @@ def test_a_fraction_typo_in_roi_is_rejected(tmp_path):
     path.write_text("filters_solanatracker:\n  min_roi_pct: 0.5\n")
     with pytest.raises(ValueError, match="did you mean 50"):
         ConfigStore(path=path)
+
+
+# -- the watchlist: traders of interest we are not (yet) following --------
+#
+# Qualifying and being seated are different things. A wallet that clears
+# every bar but arrives at a full roster is a trader of INTEREST, and it
+# must stay one: the old code skipped any known address outright, so a
+# wallet rejected once for a full roster could never be reconsidered
+# however much it improved, and the candidate pool could only shrink.
+
+def test_qualified_wallets_without_a_seat_are_kept_as_candidates(
+        tmp_path, db, bus):
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 2\n")
+    board = [nominee(i, tpd=10.0) for i in range(6)]
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker(board))
+    daemon.leaderboard.harvest(store.config)
+
+    assert len(registry.by_status(TraderStatus.FOLLOWED)) == 2
+    # Kept as traders of interest, not written off.
+    assert len(registry.by_status(TraderStatus.CANDIDATE)) == 4
+    assert registry.by_status(TraderStatus.REJECTED) == []
+
+
+def test_a_watchlisted_wallet_can_take_a_seat_on_a_later_sweep(
+        tmp_path, db, bus):
+    """The whole point: today's numbers get it reconsidered."""
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 1\n")
+    weak, strong = nominee(9, tpd=10.0), nominee(0, tpd=10.0)
+    tracker = FakeTracker([weak, strong])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(weak["address"]).status is TraderStatus.FOLLOWED
+    assert registry.get(strong["address"]).status is TraderStatus.CANDIDATE
+
+    # Next sweep: `strong` now leads the board and must displace it.
+    tracker.traders = [strong, weak]
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(strong["address"]).status is TraderStatus.FOLLOWED
+
+
+def test_a_watchlisted_wallets_numbers_are_refreshed(tmp_path, db, bus):
+    """Tier 2 of the plan — "has anything changed about our traders of
+    interest?" — is free: the same sweep already carries their stats."""
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 1\n")
+    tracker = FakeTracker([nominee(0, tpd=10.0), nominee(1, tpd=10.0)])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+    daemon.leaderboard.harvest(store.config)
+    watched = registry.by_status(TraderStatus.CANDIDATE)[0]
+    before = watched.score
+
+    tracker.traders = [nominee(1, tpd=10.0), nominee(0, tpd=10.0)]
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(watched.address).score != before
+
+
+# -- the quality gates ----------------------------------------------------
+
+def test_wallets_without_a_closed_round_trip_are_refused(tmp_path, db, bus):
+    """MEASURED: every wallet the service reports at 0% win rate has zero
+    closed positions — missing data, not a losing trader — and their
+    realized PnL is incoherent ($2.3M booked on $71 invested)."""
+    store = store_with(
+        tmp_path, "filters_solanatracker:\n  require_closed_trades: true\n")
+    board = [nominee(0, tpd=10.0, closed_trades=0),
+             nominee(1, tpd=10.0, closed_trades=140)]
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker(board))
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(board[0]["address"]) is None
+    assert registry.get(board[1]["address"]) is not None
+
+
+def test_low_volume_wallets_are_refused(tmp_path, db, bus):
+    """A wallet that earns on dust cannot show volume — the pools will
+    not absorb it — so volume separates real traders from rugpullers."""
+    store = store_with(
+        tmp_path, "filters_solanatracker:\n  min_volume_usd: 5000.0\n")
+    board = [nominee(0, tpd=10.0, volume_usd=300.0),
+             nominee(1, tpd=10.0, volume_usd=250_000.0)]
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker(board))
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(board[0]["address"]) is None
+    assert registry.get(board[1]["address"]) is not None
+
+
+def test_dormant_wallets_are_refused(tmp_path, db, bus):
+    store = store_with(
+        tmp_path, "filters_solanatracker:\n  max_last_trade_hours: 168.0\n")
+    stale = nominee(0, tpd=10.0, last_trade_at=time.time() - 30 * 86400)
+    fresh = nominee(1, tpd=10.0)
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker([stale, fresh]))
+    daemon.leaderboard.harvest(store.config)
+    assert registry.get(stale["address"]) is None
+    assert registry.get(fresh["address"]) is not None

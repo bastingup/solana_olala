@@ -80,7 +80,9 @@ def test_leaderboard_names_are_followed_not_queued(db, bus, config_store):
     """Stream A trusts the service: its names skip review entirely."""
     tracker = FakeTracker(traders=[
         {"address": ELITE, "win_rate": 0.7, "trade_count": 300,
-         "trades_per_day": 12.0}])
+         "trades_per_day": 12.0, "avg_buy_usd": 500.0,
+         "volume_usd": 250_000.0, "closed_trades": 150,
+         "last_trade_at": time.time()}])
     provider, registry, daemon = make_daemon(db, bus, config_store,
                                              tracker=tracker)
     daemon._harvest_candidates(config_store.config, RpcBudget(30))

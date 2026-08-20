@@ -18,7 +18,7 @@ HAND_WRITTEN = """\
 dev_mode: true
 
 risk:
-  per_trade_fraction: 0.11   # trailing comment
+  reserve_fraction: 0.11   # trailing comment
 
 tracking:
   min_interval_sec: 7.0
@@ -35,7 +35,7 @@ def test_single_file_is_layered_over_defaults(tmp_path):
     store, _ = store_at(tmp_path)
     config = store.config
     assert config.dev_mode is True
-    assert config.risk.per_trade_fraction == 0.11
+    assert config.risk.reserve_fraction == 0.11
     assert config.tracking.min_interval_sec == 7.0
     # Untouched values still come from the strict built-in defaults.
     assert config.filters_onchain.min_win_rate == 0.60
@@ -45,13 +45,13 @@ def test_runtime_update_never_rewrites_the_hand_written_file(tmp_path):
     store, path = store_at(tmp_path)
     before = path.read_text()
 
-    store.update({"risk": {"per_trade_fraction": 0.02}})
+    store.update({"risk": {"reserve_fraction": 0.02}})
 
     assert path.read_text() == before          # comments intact
     assert "A comment the operator wrote" in path.read_text()
     runtime = yaml.safe_load(store.runtime_path.read_text())
-    assert runtime == {"risk": {"per_trade_fraction": 0.02}}
-    assert store.config.risk.per_trade_fraction == 0.02
+    assert runtime == {"risk": {"reserve_fraction": 0.02}}
+    assert store.config.risk.reserve_fraction == 0.02
 
 
 def test_runtime_overrides_survive_restart_and_layer_on_top(tmp_path):

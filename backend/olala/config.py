@@ -206,7 +206,17 @@ class OnChainFilters:
 class RiskConfig:
     max_liquidity_fraction: float = 0.01
     reserve_fraction: float = 0.30
-    per_trade_fraction: float = 0.05
+    # Order size is scaled by the TOKEN'S MARKET CAP, not by a flat
+    # share of equity. One number cannot serve both a $2k pump.fun
+    # launch and a $1B major: it is dust in one and a market-moving
+    # order in the other. Small tokens get the floor, big ones the
+    # ceiling, everything between is interpolated LOGARITHMICALLY —
+    # market cap spans six orders of magnitude, so linear interpolation
+    # would park every token under $100M on the floor.
+    min_trade_sol: float = 0.01
+    max_trade_sol: float = 1.0
+    size_mcap_floor_usd: float = 10_000.0
+    size_mcap_ceiling_usd: float = 1_000_000_000.0
     max_positions_per_wallet: int = 8
     atr_period: int = 14
     atr_stop_multiplier: float = 3.5
@@ -217,8 +227,9 @@ class RiskConfig:
     # wallets at once (SOL is the base currency, never a position, so it
     # is inherently exempt). Paper wallets are exempt by design.
     max_live_wallets_per_token: int = 2
-    # An order smaller than this is not worth its fees.
-    min_order_sol: float = 0.05
+    # An order smaller than this is not worth its fees. Keep it at or
+    # below `min_trade_sol`, or the smallest tokens are refused outright.
+    min_order_sol: float = 0.01
     # A single position may never exceed this multiple of the wallet's
     # per-trade share, whatever the sizing model computes.
     max_position_equity_multiple: float = 2.0
@@ -268,9 +279,38 @@ class SolanaTrackerFilters:
     # units across two win-rate settings once let 0.7 mean 0.7% instead
     # of 70%, which admitted traders winning one trade in five.
     min_win_rate: float = 0.0
-    # Pages walked per poll (100 wallets each). pages x polls/month must
-    # stay inside the service tier (free tier: 10k requests/month).
-    pages: int = 3
+    # Wallets per request. MEASURED: the service serves up to 500 and
+    # caps there, so asking for 100 spent five times the requests for
+    # the same names against a 10k/month allowance.
+    page_size: int = 500
+    # Pages walked per poll. pages x page_size is how wide we look;
+    # pages x polls/month must stay inside the service tier.
+    pages: int = 6
+    # Candidates to keep from one sweep, before roster competition.
+    limit: int = 500
+    # TRADABILITY, not quality. The board carries each trader's average
+    # BUY in dollars, which is the closest free proxy we have for the
+    # depth of the pools they work in — and depth is what decides
+    # whether our own order can be filled at all. `risk` caps us at
+    # `max_liquidity_fraction` of a pool, so an order of $X needs a pool
+    # of X / that fraction; a wallet whose average buy is far below ours
+    # is trading somewhere we cannot follow. Measured on the live board:
+    # $14 is the 10th percentile, $183 the median.
+    min_avg_buy_usd: float = 0.0
+    # 30-day capital deployed, in USD. The load-bearing quality filter:
+    # a wallet that earns on dust or by rugging itself CANNOT show real
+    # volume, because those pools will not absorb it. Real volume at a
+    # human trade count means the positions were big, which mechanically
+    # means the tokens were not dust.
+    min_volume_usd: float = 5_000.0
+    # Require at least one CLOSED round trip. Without one the service
+    # has nothing to measure: MEASURED, every wallet reporting a win
+    # rate of 0 had closed == 0, and their realized PnL is incoherent
+    # ($2.3M realized on $71 invested). Unverifiable is worse than bad.
+    require_closed_trades: bool = True
+    # A 30-day PnL ranking happily returns wallets that stopped trading
+    # a week ago. A dormant trader occupies a seat and copies nothing.
+    max_last_trade_hours: float = 168.0
     interval_sec: int = 3600
     # NOT a quality judgment — a mechanical limit: the speed past which
     # we can neither copy a trader nor afford the RPC to try. 0 disables

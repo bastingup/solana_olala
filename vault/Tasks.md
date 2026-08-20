@@ -398,7 +398,211 @@ executed, 8 closed**. The 123 rejections were almost all "per-position
 ceiling" AFTER the 10 SOL wallet had saturated — correct behaviour.
 Token safety, sizing and the copy path all work.
 
+## Investigated — "wallets traded 5 min ago and we didn't copy" (2026-08-20)
+
+Operator, second report after the fixes. Traced end to end: live
+leaderboard fetch, live chain reads, a shadow tracker, and a replay of
+real trades through the real engine. **No bug found this time** — three
+separate things were being mistaken for one.
+
+### 1. `signals_emitted` resets on restart
+
+The counter is in-memory. The 7 swaps sitting in `processed_signatures`
+were handled 64 minutes ago; the process had been up 57. They belonged
+to the PREVIOUS run, so "0 signals" was reading a counter that had been
+zeroed, not a tracker that had stopped working.
+
+### 2. The tracker is provably fine
+
+Ran a SHADOW tracker on a snapshot with production's exact roster and
+watermarks, 37 passes over 4 minutes, instrumented to print every fetch
+and reconstruction. Result: identical to production — zero swaps,
+because the roster genuinely produced none in that window. Rewinding a
+watermark and re-running produced 11 signals immediately, so the
+machinery works.
+
+### 3. What actually blocked the two real BUYS
+
+Both were the same token:
+
+    6mqnGxTjtxM1L9TFWdzWco6N9y9Ve2YTuBgRgHNXpump
+    market cap $2,409   liquidity $0   pair age 1.3h
+    -> "size 0.0000 SOL below minimum — binding constraint:
+        liquidity ceiling"
+
+`risk.max_liquidity_fraction: 0.01` means our capital never exceeds 1%
+of a pool. One percent of zero is zero, so the order cannot clear
+`min_order_sol`. **That rule is correct and it protected us**: 0.8 SOL
+into a $2.4k pool would be a catastrophic self-inflicted fill.
+
+Threshold math at SOL ~$200: a pool under ~$1,000 liquidity can never
+fund the 0.05 SOL minimum; ~$16,000 is needed for a full 0.8 SOL entry.
+
+### The market-cap suspicion, falsified a second time
+
+Operator again suspected the MC filter and offered to drop it to $2k.
+Measured again: `dev_mode: false` + paper wallets means
+`_handle_buy` never calls the safety screen at all
+(`if config.dev_mode or not wallet.is_paper`). The MC/liquidity numbers
+in `filters_onchain` are NOT in the paper path. What binds is the RISK
+engine's 1%-of-pool rule. Lowering the market cap would change nothing;
+it was left alone.
+
+### Structural insight worth keeping
+
+A freshly-armed roster sees SELLS first. We arm at the trader's newest
+signature, which correctly skips the entry they already made — so the
+next thing we observe is their exit, which we cannot copy because we
+hold nothing. Copying only begins on their NEXT entry. In one 15-minute
+sample, 13 of 13 swaps by followed wallets were sells.
+
+## Done — wide fetch + market-cap-scaled order size (2026-08-20)
+
+Operator: "fetch the first 10,000 wallets and trade the ones that are
+tradable" — then, better: "use 0.01 SOL as a base and scale with market
+cap up to 1 SOL, so we don't need a filter to decide trade size and we
+can trade the small pump.fun tokens."
+
+### Fetching wide (measured first)
+
+- [x] **`limit` accepts 500, not 100.** MEASURED: the service serves up
+      to 500 per request and silently caps there (1000 returns 500).
+      The client hardcoded 100, spending five requests per 500 wallets
+      against a 10,000/month allowance. Now `page_size: 500`.
+- [x] With our quality filters the WHOLE qualified population — 1,028
+      wallets — comes back in **3 requests**. "10,000 wallets" is not
+      the constraint anyone thought it was; the board simply does not
+      hold that many that pass ROI + win-rate + active-days.
+- [x] The payload carries far more than we were reading:
+      `averages.buy` / `averages.sell` (average trade size in USD),
+      `invested`, `proceeds`, `counts.tokensTraded`, and
+      `timing.lastTrade`. All now parsed.
+- [x] Two new client-side gates, free from payload data:
+      `min_avg_buy_usd` (a proxy for the depth of the pools a trader
+      works in) and `max_last_trade_hours` (a 30-day PnL ranking
+      happily returns wallets that stopped trading a week ago).
+      MEASURED distribution of average buy: p10 $14, median $183,
+      p90 $804.
+
+### Order size now follows the TOKEN, not the wallet
+
+`per_trade_fraction` is gone. One flat share of equity cannot serve both
+a $2k pump.fun launch and a $1B major — the same number is dust in one
+and a market-moving order in the other, so it either refused small
+tokens or would have bulldozed them.
+
+    min_trade_sol 0.01  ->  max_trade_sol 1.0
+    interpolated LOGARITHMICALLY between
+    size_mcap_floor_usd $10k and size_mcap_ceiling_usd $1B
+
+Market cap spans six orders of magnitude; a linear ramp would park
+everything under $100M on the floor. The ladder:
+
+    $10k -> 0.010    $10M  -> 0.604
+    $100k-> 0.208    $100M -> 0.802
+    $1M  -> 0.406    $1B   -> 1.000
+
+`min_order_sol` dropped 0.05 -> 0.01 to match the floor, and the
+per-position ceiling is now measured against a normal entry in THIS
+token rather than a share of equity, so it scales with the target.
+
+**The liquidity ceiling, cash reserve and position cap all still apply
+on top.** Sizing down is not the same as trading into nothing — a pool
+holding $0 is still refused.
+
+Verified on the real tokens the roster trades:
+
+| token | market cap | liquidity | order |
+|---|---|---|---|
+| g7mSiJZR63gG | $2,107 | $2,269 | **0.0100 SOL** (was refused) |
+| nAPC5renY7b7 | $4,577 | $4,019 | **0.0100 SOL** (was refused) |
+| FD5GJQ2Js26r | $17,954 | $9,345 | 0.0603 SOL |
+| 9b6CWNzoTarG | $220,688 | $38,255 | 0.2761 SOL |
+| LFEJTxJ9yi6o | $2,319,419 | $155,606 | 0.4783 SOL |
+| 6mqnGxTjtxM1 | $2,409 | **$0** | still refused |
+
+- [x] `filters_solanatracker.min_avg_buy_usd` set to 0 (off) as a
+      result: with size adapting, a wallet trading thin tokens is
+      followed at a small size rather than excluded. The mechanism is
+      kept for when the operator wants it back.
+
+## Done — traders of interest: watchlist + mechanical filters (2026-08-20)
+
+Operator's design: hard basic filters (no dormant wallets, cap on
+trades/day, minimum trading volume), fetch wide, keep everyone who
+qualifies as a "trader of interest", follow a subset, and run three
+priority tiers — followed wallets now / changes among the interesting
+ones / brand-new names.
+
+### The measurement that reshaped it
+
+"Fetch 10,000 wallets" is not reachable at any useful quality bar:
+
+    minTrades=20 only          12,500+ wallets
+    + minWinRate=1 (any)        2,457   <- board EXHAUSTED
+    + minWinRate=55             1,407
+    + minWinRate=70             1,029
+
+**A win rate of 0 means `closed == 0`, not "loses money".** MEASURED:
+every zero-win wallet on the board has ZERO completed round trips, and
+their headline numbers are incoherent — `realized $2,354,209` on
+`invested $71`. The ~10,000 extra wallets are exactly those, so
+following them means acting on figures nothing can verify.
+
+That makes 2,457 the true ceiling of measurable wallets, and it is why
+`require_closed_trades` now exists as an explicit gate rather than an
+accident of the win-rate floor.
+
+### Shipped
+
+- [x] `min_win_rate` 0.70 -> **0.55** (operator's call), sort stays
+      `realized` — with the board exhausted in 3 requests, sort only
+      decides seat order, not coverage.
+- [x] `min_volume_usd: 5000` — the load-bearing quality filter, and the
+      operator's insight: a wallet that earns on low-cap trash or by
+      rugging itself CANNOT show real volume, because those pools will
+      not absorb it. Volume at a human trade count mechanically implies
+      real position sizes, which implies real tokens.
+- [x] `require_closed_trades: true` — see above.
+- [x] `max_last_trade_hours: 168` (7 days), `max_trades_per_day: 400`.
+- [x] `page_size: 500` (MEASURED cap; we were asking for 100).
+
+### The watchlist, and two bugs it exposed
+
+- [x] A wallet that qualifies but finds no seat is now kept as a
+      CANDIDATE with fresh numbers — a trader of interest — instead of
+      being marked REJECTED. `harvest` previously skipped ANY known
+      address outright, so a name passed over once could never be
+      reconsidered however much it improved; the pool could only shrink.
+- [x] **Incumbents were never re-scored.** A seated trader kept the
+      score it was admitted with forever, so comparisons ran against a
+      stale number and a trader that had slipped down the board could
+      not be displaced by an equally-ranked newcomer. Found by the new
+      watchlist test.
+- [x] `harvest` is now TWO passes — score and refresh everything against
+      today's board, THEN contest seats. With one pass, board ORDER
+      decided the outcome: whoever was scored first won, because the
+      other side of the comparison had not been updated yet.
+
+Tier 2 of the operator's plan ("has anything changed about our traders
+of interest?") therefore costs nothing: the same sweep already carries
+current numbers for every wallet we know.
+
+### Result on the live board
+
+**254 traders of interest** in 2.4s / 3 requests. Median win rate 79.4%,
+median 30-day volume $11,930, median 26 trades/day, 18 traded within the
+hour. Top seats run 94-97% win rates on $57k-$662k volume.
+
 ## Open — from this rework
+
+- [ ] The roster's realized-PnL winners trade ultra-thin pump.fun pools
+      (a $2.4k-cap token with $0 liquidity). At `per_trade_fraction:
+      0.08` on a 10 SOL wallet we want 0.8 SOL per entry, which needs
+      ~$16k of pool depth. Either accept much smaller fills in thin
+      tokens, or select traders who work in deeper ones. Needs an
+      operator decision, not a code change.
+
 
 - [ ] `LeaderboardSource.harvest` skips any address already in the
       registry, whatever its status — so a wallet once rejected as

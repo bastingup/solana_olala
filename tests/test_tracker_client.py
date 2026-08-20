@@ -107,3 +107,79 @@ def test_quality_floors_are_sent_only_when_set():
     client.top_traders()          # zero = disabled, must not be sent
     assert "minRoi" not in session.requests[0]
     assert "minWinRate" not in session.requests[0]
+
+
+# -- tradability: can we actually fill alongside this wallet? --------------
+#
+# The board ranks by PnL, which says nothing about whether OUR order can
+# be filled. Two real buys were refused by the risk engine because the
+# pool held $0 — the trader could work there, we could not. These
+# filters use payload data the board already sends, at zero extra cost.
+
+import time as _time
+
+
+def board_entry(i, *, tpd=20.0, avg_buy=500.0, last_trade_age_h=1.0):
+    return {"wallet": f"W{i:03d}" + "x" * 40, "winRate": 90.0,
+            "period": {"realized": 1000.0 - i, "tradingDays": 25},
+            "counts": {"trades": int(tpd * 25), "tokensTraded": 40},
+            "averages": {"buy": avg_buy, "sell": avg_buy * 1.2},
+            "timing": {"lastTrade":
+                       (_time.time() - last_trade_age_h * 3600) * 1000}}
+
+
+def test_average_buy_and_last_trade_are_parsed():
+    client, session = client_with([([board_entry(1)], None)])
+    row = client.top_traders()[0]
+    assert row["avg_buy_usd"] == 500.0
+    assert row["avg_sell_usd"] == 600.0
+    assert row["tokens_traded"] == 40
+    assert _time.time() - row["last_trade_at"] < 4000
+
+
+def test_wallets_trading_below_our_size_are_dropped():
+    """A wallet averaging $14 a buy works in pools that cannot absorb
+    our order — measured, that is the 10th percentile of this board."""
+    entries = [board_entry(1, avg_buy=14.0), board_entry(2, avg_buy=800.0)]
+    client, _ = client_with([(entries, None)])
+    rows = client.top_traders(min_avg_buy_usd=100.0)
+    assert [r["avg_buy_usd"] for r in rows] == [800.0]
+
+
+def test_an_unknown_average_buy_is_not_treated_as_a_big_one():
+    entries = [{"wallet": "W" + "y" * 43, "winRate": 90.0,
+                "period": {"realized": 1.0, "tradingDays": 10},
+                "counts": {"trades": 100}}]
+    client, _ = client_with([(entries, None)])
+    assert client.top_traders(min_avg_buy_usd=100.0) == []
+
+
+def test_dormant_wallets_are_dropped():
+    """A 30-day PnL board happily returns wallets that stopped trading a
+    week ago; a dormant trader holds a seat and copies nothing."""
+    entries = [board_entry(1, last_trade_age_h=200.0),
+               board_entry(2, last_trade_age_h=0.5)]
+    client, _ = client_with([(entries, None)])
+    rows = client.top_traders(max_last_trade_age_sec=24 * 3600)
+    assert [r["address"][:4] for r in rows] == ["W002"]
+
+
+def test_zero_disables_each_tradability_gate():
+    entries = [board_entry(1, avg_buy=1.0, last_trade_age_h=1000.0)]
+    client, _ = client_with([(entries, None)])
+    assert len(client.top_traders(min_avg_buy_usd=0.0,
+                                  max_last_trade_age_sec=0.0)) == 1
+
+
+def test_page_size_is_sent_and_capped_at_the_measured_maximum():
+    """MEASURED: the service serves up to 500 and caps there. Asking for
+    100 spent five requests per 500 wallets against a 10k allowance."""
+    from olala.chain.solana_tracker import MAX_PAGE_SIZE
+
+    client, session = client_with([([board_entry(1)], None)])
+    client.top_traders(page_size=500)
+    assert session.requests[0]["limit"] == 500
+
+    client, session = client_with([([board_entry(1)], None)])
+    client.top_traders(page_size=5000)
+    assert session.requests[0]["limit"] == MAX_PAGE_SIZE

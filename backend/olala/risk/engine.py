@@ -13,11 +13,44 @@ The engine sizes trades; it never originates them.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-from ..config import AppConfig
+from ..config import AppConfig, RiskConfig
 from ..domain.models import RiskVerdict, TokenInfo
 
+
+
+def target_size_sol(risk: RiskConfig, market_cap_usd: float) -> float:
+    """What a normal entry in a token of this size is worth, in SOL.
+
+    A flat share of equity cannot serve the whole market. At 1% of a 10
+    SOL wallet, 0.1 SOL is a rounding error in a $1B token and several
+    percent of a $2k pump.fun pool — so one setting either refuses to
+    trade small tokens or bulldozes them.
+
+    Market cap spans six orders of magnitude, so the ladder is
+    LOGARITHMIC. Linear interpolation would leave everything below
+    $100M sitting on the floor, which is most of what these traders
+    actually trade.
+
+    This is only the TARGET. The liquidity ceiling, the cash reserve and
+    the per-position cap all still apply on top, and any of them may cut
+    it down.
+    """
+    floor, ceiling = risk.min_trade_sol, risk.max_trade_sol
+    if ceiling <= floor:
+        return max(floor, 0.0)
+    low = max(risk.size_mcap_floor_usd, 1.0)
+    high = max(risk.size_mcap_ceiling_usd, low * 10.0)
+    if market_cap_usd <= low:
+        # Unknown or tiny: the smallest order we are willing to place.
+        return floor
+    if market_cap_usd >= high:
+        return ceiling
+    span = math.log10(high) - math.log10(low)
+    position = (math.log10(market_cap_usd) - math.log10(low)) / span
+    return floor + position * (ceiling - floor)
 
 
 @dataclass
@@ -79,12 +112,15 @@ class RiskEngine:
         else:
             available_sol = exposure.cash_sol - reserve_sol
 
-        # Per-position ceiling keeps one trade from dominating the wallet.
-        position_cap_sol = (exposure.equity_sol * risk.per_trade_fraction
-                            * risk.max_position_equity_multiple
+        # Size follows the TOKEN, not the wallet: see `target_size_sol`.
+        target_sol = target_size_sol(risk, token.market_cap_usd)
+
+        # Per-position ceiling keeps one trade from dominating the
+        # wallet, measured against what a normal entry in THIS token
+        # would be.
+        position_cap_sol = (target_sol * risk.max_position_equity_multiple
                             ) - exposure.invested_in_mint_sol
 
-        target_sol = exposure.equity_sol * risk.per_trade_fraction
         size = min(target_sol, liquidity_cap_sol, available_sol,
                    position_cap_sol)
 

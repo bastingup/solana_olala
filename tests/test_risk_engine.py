@@ -18,11 +18,58 @@ def evaluate(token=None, expo=None, is_resize=False, config=None):
         is_resize)
 
 
-def test_normal_entry_sized_at_per_trade_fraction():
-    verdict = evaluate()
+def test_entry_is_sized_by_the_token_not_the_wallet():
+    """A $50M-cap token in a deep pool: the market-cap ladder decides,
+    and the same wallet would get a far smaller order in a $10k token."""
+    from olala.risk.engine import target_size_sol
+
+    config = AppConfig()
+    verdict = evaluate(config=config)
     assert verdict.approved
-    # 5% of 10 SOL equity, deep pool: target wins.
-    assert abs(verdict.size_sol - 0.5) < 1e-6
+    expected = target_size_sol(config.risk, 50_000_000.0)
+    assert abs(verdict.size_sol - expected) < 1e-6
+    assert 0.5 < verdict.size_sol < 0.9        # mid-ladder, not the floor
+
+
+def test_the_size_ladder_spans_floor_to_ceiling_logarithmically():
+    """One number cannot serve a $2k launch and a $1B major. Six orders
+    of magnitude of market cap need a log ramp, or everything below
+    $100M sits on the floor."""
+    from olala.risk.engine import target_size_sol
+
+    r = AppConfig().risk
+    assert target_size_sol(r, 0) == r.min_trade_sol            # unknown
+    assert target_size_sol(r, 2_409) == r.min_trade_sol        # a real one
+    assert target_size_sol(r, 10 ** 12) == r.max_trade_sol     # clamped
+
+    ladder = [target_size_sol(r, mc)
+              for mc in (10_000, 100_000, 1_000_000, 10_000_000,
+                         100_000_000, 1_000_000_000)]
+    assert ladder == sorted(ladder)                # monotonic
+    assert ladder[0] == r.min_trade_sol
+    assert ladder[-1] == r.max_trade_sol
+    # Each decade of market cap adds roughly the same amount of size —
+    # that is what "logarithmic" buys us.
+    steps = [b - a for a, b in zip(ladder, ladder[1:])]
+    assert max(steps) - min(steps) < 1e-6
+
+
+def test_a_tiny_token_is_traded_small_rather_than_refused():
+    """The point of the ladder: a $20k pump.fun token with a shallow but
+    real pool gets a small order instead of being excluded."""
+    token = make_token(market_cap_usd=20_000.0, liquidity_usd=5_000.0,
+                       price_usd=1.0, price_sol=0.005)
+    verdict = evaluate(token=token)
+    assert verdict.approved
+    assert verdict.size_sol <= 0.1
+
+
+def test_a_token_with_no_pool_is_still_refused():
+    """Sizing down is not the same as trading into nothing."""
+    token = make_token(market_cap_usd=2_409.0, liquidity_usd=0.0)
+    verdict = evaluate(token=token)
+    assert not verdict.approved
+    assert "liquidity" in verdict.reason
 
 
 def test_liquidity_ceiling_binds():
@@ -35,8 +82,17 @@ def test_liquidity_ceiling_binds():
     assert verdict.approved
     assert verdict.size_sol == pytest.approx(0.1, abs=1e-6)
 
+    # Headroom shrinks to a real but tiny amount: we now TRADE it small
+    # rather than refuse, which is the point of the market-cap ladder.
     verdict = evaluate(token=token, expo=exposure(equity=100.0, cash=100.0,
-                                                  invested=0.49))
+                                                  invested=0.48))
+    assert verdict.approved
+    assert verdict.size_sol == pytest.approx(0.02, abs=1e-6)
+
+    # Below the minimum order it is still refused — sizing down is not
+    # the same as trading dust.
+    verdict = evaluate(token=token, expo=exposure(equity=100.0, cash=100.0,
+                                                  invested=0.4999))
     assert not verdict.approved
     assert "liquidity" in verdict.reason
 
@@ -67,9 +123,15 @@ def test_max_positions_per_wallet():
 
 
 def test_per_position_ceiling_binds_on_resize():
-    # Already invested 2x per-trade-fraction of equity -> ceiling reached.
-    expo = exposure(cash=10.0, equity=10.0, invested=1.0)
-    verdict = evaluate(expo=expo, is_resize=True)
+    """The ceiling is measured against a normal entry in THIS token, so
+    it scales with the token the way the target does."""
+    from olala.risk.engine import target_size_sol
+
+    config = AppConfig()
+    already = (target_size_sol(config.risk, 50_000_000.0)
+               * config.risk.max_position_equity_multiple)
+    expo = exposure(cash=10.0, equity=10.0, invested=already)
+    verdict = evaluate(expo=expo, is_resize=True, config=config)
     assert not verdict.approved
     assert "per-position" in verdict.reason
 

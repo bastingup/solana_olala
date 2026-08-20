@@ -91,14 +91,20 @@ tracking:
 risk:
   max_liquidity_fraction: 0.01
   reserve_fraction: 0.3
-  per_trade_fraction: 0.05
+  # Order size scales with token market cap (log-spaced) rather than
+  # being a flat share of equity, so small pools get small orders
+  # instead of being excluded.
+  min_trade_sol: 0.01
+  max_trade_sol: 1.0
+  size_mcap_floor_usd: 10000.0
+  size_mcap_ceiling_usd: 1000000000.0
   max_positions_per_wallet: 8
   atr_period: 14
   atr_stop_multiplier: 3.5
   max_token_top10_holder_fraction: 0.5
   min_pair_age_days: 14.0
   max_live_wallets_per_token: 2
-  min_order_sol: 0.05
+  min_order_sol: 0.01
   max_position_equity_multiple: 2.0
 
 paper_fills:

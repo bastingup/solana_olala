@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import time
 
-from ..domain.models import TraderStats
+from ..domain.models import TraderStats, TraderStatus
 from ..events import EventBus
 from ..services.traders import TraderRegistry
 from .roster import Roster
@@ -78,36 +78,105 @@ class LeaderboardSource:
         board = config.filters_solanatracker
         entries = self._tracker.top_traders(
             window_days=board.window_days,
+            limit=board.limit,
             min_trades=board.min_trades,
             min_active_days=board.min_active_days,
             sort=board.sort,
             max_trades_per_day=(board.max_trades_per_day
                                 if board.max_trades_per_day > 0 else None),
             max_pages=board.pages,
+            page_size=board.page_size,
             min_roi_pct=board.min_roi_pct,
-            min_win_rate=board.min_win_rate)
+            min_win_rate=board.min_win_rate,
+            min_avg_buy_usd=board.min_avg_buy_usd,
+            max_last_trade_age_sec=board.max_last_trade_hours * 3600.0,
+            min_volume_usd=board.min_volume_usd,
+            require_closed_trades=board.require_closed_trades)
 
-        followed = 0
+        total = len(entries)
+
+        # PASS ONE — score everything against today's board, and refresh
+        # every wallet we already know. This must finish before any seat
+        # is contested: comparing a newcomer against an incumbent's
+        # STALE score let board order decide the outcome, so a trader
+        # that had slipped could keep its seat purely by being scored
+        # first. It is also the whole of "has anything changed about our
+        # traders of interest?" — free, because the sweep already
+        # carries their current numbers.
+        scored: list[tuple[dict, float, int]] = []
         for position, entry in enumerate(entries):
-            address = entry["address"]
-            self.rank[address] = float(len(entries) - position)
-            if self._registry.get(address) is not None:
+            score = self._score(entry, position, total)
+            self.rank[entry["address"]] = float(total - position)
+            scored.append((entry, score, position))
+            profile = self._registry.get(entry["address"])
+            if profile is not None:
+                self._refresh(profile, entry, score)
+
+        # PASS TWO — allocate seats, best first.
+        followed = 0
+        watchlisted = 0
+        for entry, score, position in scored:
+            profile = self._registry.get(entry["address"])
+            if profile is not None and profile.status is TraderStatus.FOLLOWED:
                 continue
-            if self._follow(config, entry, position, len(entries)):
+            if profile is None:
+                seated = self._follow(config, entry, score, position, total)
+            else:
+                # The watchlist. Skipping known addresses outright, as
+                # this used to, meant a wallet passed over once for a
+                # full roster could never be reconsidered however much
+                # it improved — the pool could only ever shrink.
+                seated = self._reconsider(config, profile, entry, score)
+            if seated:
                 followed += 1
+            else:
+                watchlisted += 1
+
         if followed:
             self._bus.publish("discovery_scan", {
                 "source": SOURCE_NAME, "new_candidates": followed})
-        logger.info("leaderboard: %d names returned (sort=%s), %d followed",
-                    len(entries), board.sort, followed)
+        logger.info("leaderboard: %d names qualified (sort=%s), %d seated, "
+                    "%d held on the watchlist", total, board.sort, followed,
+                    watchlisted)
         return followed
+
+    def _refresh(self, profile, entry: dict, score: float) -> None:
+        """Bring a known trader's score and stats up to date."""
+        if score == profile.score:
+            return
+        previous = profile.score
+        profile.score = score
+        profile.stats = self._stats(entry)
+        self._registry.update(profile)
+        if score < previous - 0.1:
+            logger.info("followed %s… slipped on the board (%.3f -> %.3f); "
+                        "a stronger name can now take the seat",
+                        profile.address[:8], previous, score)
+
+    def _reconsider(self, config, profile, entry: dict,
+                    score: float) -> bool:
+        """Compete for a seat with a wallet we already know.
+
+        These are the traders of interest: they qualified again today,
+        so they contest a seat on the same terms as a new name.
+        """
+        if not self._roster.claim_seat(config, profile.address, score):
+            # No seat today. It stays a CANDIDATE — on the watchlist,
+            # with fresh numbers — rather than being written off.
+            profile.status = TraderStatus.CANDIDATE
+            profile.rejection_reason = ""
+            self._registry.update(profile)
+            return False
+        self._roster.follow(profile, score, stats=self._stats(entry))
+        logger.info("re-seated %s… from the watchlist (score %.3f)",
+                    profile.address[:8], score)
+        return True
 
     # -- internals ---------------------------------------------------------
 
-    def _follow(self, config, entry: dict, position: int,
+    def _follow(self, config, entry: dict, score: float, position: int,
                 total: int) -> bool:
         address = entry["address"]
-        score = self._score(entry, position, total)
         # Register first: claim_seat EVICTS an incumbent when the roster
         # is full, so it must never run before we know the seat can
         # actually be filled.
@@ -115,8 +184,11 @@ class LeaderboardSource:
             return False
         profile = self._registry.get(address)
         if not self._roster.claim_seat(config, address, score):
-            self._roster.reject(
-                profile, "roster full — did not beat the weakest seat")
+            # Not a rejection: it qualified, there was simply no seat.
+            # It stays a CANDIDATE so the next sweep reconsiders it.
+            profile.score = score
+            profile.stats = self._stats(entry)
+            self._registry.update(profile)
             return False
         # No follow cursor: WalletTracker arms it at the trader's newest
         # signature on first contact, so no history replays as signals.
