@@ -364,3 +364,62 @@ def test_metrics_carry_the_state_to_the_ui():
     router = make_router({"a": FakeSource("a")})
     router.call("history", "getBalance", ["x"])
     assert router.metrics()["sources"]["a"]["state"] == "active"
+
+
+# -- call_accept: escalate a soft miss (null / empty) to a deeper source ----
+#
+# publicnode keeps only ~2 days of history, so an aged getTransaction reads
+# null and an aged getSignaturesForAddress reads empty THERE while a deeper
+# source still serves it. `null`/`[]` are not errors, so ordinary routing
+# returns the shallow answer verbatim. call_accept treats an unsatisfying
+# result as a soft miss and tries the next source, without failing over on
+# every legitimately-quiet wallet.
+
+def test_call_accept_escalates_a_null_to_the_next_source():
+    a = FakeSource("a", results=[None])
+    b = FakeSource("b", results=[{"tx": 1}])
+    router = make_router({"a": a, "b": b})
+    result = router.call_accept("history", "getTransaction", ["sig"],
+                                accept=lambda r: r is not None)
+    assert result == {"tx": 1}
+    assert a.calls and b.calls              # a answered null, b served it
+
+
+def test_call_accept_returns_the_soft_miss_when_no_source_does_better():
+    """All sources return null: the honest null is returned, NOT an
+    exhaustion error — the tracker reads that as 'not yet, retry'."""
+    a = FakeSource("a", results=[None])
+    b = FakeSource("b", results=[None])
+    router = make_router({"a": a, "b": b})
+    assert router.call_accept("history", "getTransaction", ["sig"],
+                              accept=lambda r: r is not None) is None
+
+
+def test_call_accept_keeps_a_soft_missing_source_healthy():
+    """A soft miss is a real answer, so the source stays closed and
+    counts as routed — it just could not serve THIS request fully."""
+    a = FakeSource("a", results=[None])
+    b = FakeSource("b", results=[{"tx": 1}])
+    router = make_router({"a": a, "b": b})
+    router.call_accept("history", "getTransaction", ["sig"],
+                       accept=lambda r: r is not None)
+    assert router.source_state("a") in ("active", "ready")
+    assert router.metrics()["failovers"] == 0    # a soft miss is not a failover
+
+
+def test_call_accept_stops_at_the_first_accepted_result():
+    a = FakeSource("a", results=[{"tx": 1}])
+    b = FakeSource("b", results=[{"tx": 2}])
+    router = make_router({"a": a, "b": b})
+    assert router.call_accept("history", "getTransaction", ["sig"],
+                              accept=lambda r: r is not None) == {"tx": 1}
+    assert b.calls == []
+
+
+def test_call_accept_escalates_an_empty_signature_page():
+    a = FakeSource("a", results=[[]])
+    b = FakeSource("b", results=[[{"signature": "s", "slot": 9}]])
+    router = make_router({"a": a, "b": b})
+    result = router.call_accept("history", "getSignaturesForAddress", ["w"],
+                                accept=lambda r: bool(r))
+    assert result == [{"signature": "s", "slot": 9}]

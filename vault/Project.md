@@ -122,6 +122,27 @@ public-safe 2.0 — `HeliusRpcProvider` raises its own floor to 8, so the
 config value is the public fallback, not the Helius rate. Don't raise it
 unless you also plan to keep the key.
 
+**publicnode keeps only ~2 days of signature history** (MEASURED
+2026-08-20: a wallet whose newest transaction was 49h old returned ZERO
+signatures and a `null` `getTransaction` there, while mainnet_beta and
+Helius both served it; the oldest visible roster signature was ~38h
+back). A null tx and an empty signature page are both SUCCESSFUL
+responses, so ordinary routing returns them verbatim — a wallet quiet
+for two days would go silently invisible on the `tracking` policy.
+
+**Result-value failover (`RpcRouter.call_accept`, 2026-08-20).** A call
+may pass an `accept(result)` predicate; a result that fails it is a SOFT
+MISS — the router tries the next source and returns the first accepted
+result (or the last miss if none does better). A soft miss is not an
+error: the source stays healthy and no failover is counted, so a
+legitimately-quiet wallet never trips a breaker. Two opt-in flags ride
+this: `RoutedProvider.get_transaction(sig, failover_on_null=True)` (the
+COPY path, so an aged-tx null escalates instead of wedging) and
+`get_signatures(addr, failover_on_empty=True)` (the tracker arming an
+otherwise-invisible followed wallet). Both default to False — discovery
+hits nulls/empties by the thousand and must stay on the cheap source, or
+the firehose moves onto Helius and burns the credit budget. See [[Tasks]].
+
 **Sustained usage matters on a free plan (~1M credits/month). The
 operator's HF-pivot ledger (2026-08-18, verified by script — 0.99M/mo):**
 
@@ -165,12 +186,29 @@ never a position, so it is inherently exempt.
 
 `TraderSubscriber` (chain/subscriber.py, `websocket-client`) keeps one
 WebSocket to the RPC provider (`RpcProvider.ws_endpoint()`) with a
-`logsSubscribe` (mentions) per followed trader. Notifications poke
-`FollowDaemon.poll_now(address)` (debounced 1.5s), which runs the normal
-cursor protocol under a poll lock — so push-triggered and interval polls
-share ordering, dedupe, and budget rules. The 12s interval poll remains
-as the safety net; if the socket drops (or the lib is missing), the
-system degrades to polling, never to silence.
+`logsSubscribe` (mentions) per followed trader. The notification already
+carries the signature and slot, so it goes straight to
+`WalletTracker.note_activity` — no `getSignaturesForAddress` at all.
+This is the fast path: detection lands about a second after the block.
+
+**The commitment rule.** A notification reaches us at `confirmed`, and
+the node's finalized height runs ~31-32 slots (~12.6s) behind it —
+measured. So every read of a pushed signature MUST be made at
+`confirmed`; `TRANSACTION_OPTIONS` pins it. Asking at `finalized` (the
+node default) returns null for the whole window in which a copy is worth
+making, and that is exactly what silenced trading on 2026-08-20.
+
+**Null means "not yet", never "nothing".** `_handle_signature` returns
+False when the node cannot serve the body, releasing its claim and
+counting `status.unreadable`; the sweep stops there rather than
+advancing the watermark over it. Recording an unread signature as
+handled retires the trade permanently.
+
+The sweep remains the safety net and the sole owner of the watermark —
+push only adds to the processed ledger, because a `confirmed`
+notification proves nothing about the gap beneath it. If the socket
+drops (or the lib is missing), the system degrades to polling, never to
+silence.
 
 ## Trading semantics
 

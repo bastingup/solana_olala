@@ -3,6 +3,294 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Fixed — audited copy pipeline: 4 defects found and fixed (2026-08-20)
+
+**Outcome:** the copy path was never broken (it executed a copy mid-audit),
+but four real defects around it were found and ALL FIXED the same day — see
+"Fixed — all four defects" below in this section. The audit findings that
+led there follow.
+
+Operator report: "we fetch data from the public chain endpoints but we
+never execute a copy trade." Audited the whole path against the LIVE
+running process (up 20 min at the start, `signals_emitted: 0`,
+`positions: 0`), the live database, and live mainnet.
+
+**The pipeline is not broken. It executed a copy trade during the
+audit.** But the audit found four real defects around it, and one of
+them is why the dashboard looked wrong.
+
+### The chain of evidence
+
+1. **Tracking is current, not frozen.** Fetched every followed wallet's
+   newest on-chain signature and compared it to its watermark:
+   **36 of 42 sit exactly on the trader's newest transaction**, 1 was
+   153 slots behind (in flight), 5 are the ghosts below. `gaps_detected:
+   0`, `polls_failed: 2` of 1,417.
+2. **Reconstruction works.** 84 recent signatures from the seven most
+   active followed wallets through the REAL `TradeReconstructor`:
+   14 swaps found, correctly typed, correct SOL amounts.
+3. **The engine works.** Replayed all 9 real BUYs the roster made in six
+   hours through a REAL `TradingEngine` (real config, real risk, real
+   token safety, real Jupiter fill probe) against a COPY of the live DB:
+   **9 of 9 executed**, each at 0.0100 SOL — the market-cap ladder's
+   floor, because every one was a $1.6k-$3.5k pump.fun token.
+4. **Then it happened for real.** `32p5w2TmLHe2` bought
+   `CkjVr4ZFrCFv` mid-audit; the live process detected it, sized it,
+   filled **0.1541 SOL**, and closed on the trader's exit 18 seconds
+   later at 0.1239 SOL. `signals_emitted` 0 -> 12.
+
+### Why it LOOKS dead: the roster barely trades
+
+Six-hour on-chain census of all 42 followed wallets (sampled up to 40
+transactions each, reconstructed with the real reconstructor):
+
+    212 transactions sampled
+      7 reconstructed BUYS        <- the only thing we can copy
+     26 reconstructed SELLS       <- no-ops; we hold nothing
+    141 non-swap transactions
+     14 of 42 wallets did ANYTHING at all in six hours
+
+**About one copyable buy per hour, for the whole roster.** A process up
+for twenty minutes showing zero trades is the expected outcome, not a
+fault. The earlier ~280 buys/day estimate no longer holds for this
+roster.
+
+### Defect 1 — the roster's freshness display is fabricated
+
+`LeaderboardSource._stats` sets `last_trade_at=time.time()` at seat
+time, and `TraderStats.inactive_hours` is `now - last_trade_at`. So
+**every followed trader shows `inactive_hours: 0.0` forever**, however
+long they have actually been quiet. Measured reality on the same
+roster: last on-chain activity ranges 0.1h to 49h, median several
+hours. This is almost certainly why the roster reads as busy while
+nothing is copied — the one number that would have said "these traders
+stopped trading" is hardcoded to say the opposite.
+
+### Defect 2 — publicnode's history is ~2 days deep, and running off it is SILENT
+
+MEASURED, same wallet, same moment:
+
+    CmwFWFQsK2tu (followed), newest tx 49.3h old
+      publicnode    getSignaturesForAddress -> 0 sigs   getTransaction -> null
+      mainnet_beta  getSignaturesForAddress -> 5 sigs   getTransaction -> OK
+      helius        getSignaturesForAddress -> 5 sigs   getTransaction -> OK
+
+publicnode's oldest visible roster signature sits ~38h back; the
+invisible ones are 47-49h back. **Five followed wallets are therefore
+completely invisible on the `tracking` policy** (`AfQ21LqgpAz7`,
+`7qjDDvNAp9gd`, `CmwFWFQsK2tu`, `xUeyUJYAFESK`, `BBhFEWSC9x2H`) — five
+dead seats, watermark still `slot=0` after ~30 polls each.
+
+**And nothing reports it.** An empty page is a SUCCESSFUL response, so:
+`select_fresh` returns `complete=True, newest=None`, `_reconcile`
+advances nothing, `_note_poll(True, ...)` records a clean poll, no gap
+is counted, and the router never fails over — failover triggers on
+errors, and there is no error. This is the same shape as the frozen
+watermark and the commitment blackout: **an absence read as proof of
+completion.**
+
+### Defect 3 — a null `getTransaction` can now WEDGE a wallet
+
+Today's `unreadable` fix (correct in itself) makes `_reconcile` break on
+a transaction the node cannot serve, so the watermark stops short of it.
+For a transaction below publicnode's retention edge that null is
+**permanent**, not "not yet" — and `history` is `[publicnode, helius,
+mainnet_beta]`, so the two sources that CAN serve it are never asked,
+because null is not a failure. Latent today (36/42 watermarks are at the
+chain head), but it converts a transient stall into a permanent one at
+exactly the retention boundary. Live counter: `unreadable: 40` in 25
+minutes.
+
+### Defect 4 — the batch gear cannot run at this roster size
+
+Live error, every attempt: `batch sweep failed: publicnode has no budget
+for 42 sub-calls within 5.0s`. `_derived_interval` gives
+`max(min_interval_sec 5.0, ceil(42/10.0)) = 5.0s`, and 42 sub-calls at
+10/s needs 4.2s of a bucket the round-robin poller is already drawing
+from. The expensive gear — the one used at startup, whenever the stream
+is unproven, and after a gap — is therefore unavailable precisely when
+it is needed. It degrades to round-robin rather than failing, so it is
+not visible as an outage.
+
+### Fixed — all four defects, implemented and verified live (2026-08-20)
+
+Shipped the same day as the audit. 462 tests green (13 new), pyflakes
+clean, and every fix verified against the LIVE chain and the running
+process, not just unit-tested.
+
+- [x] **Fabricated `last_trade_at` — the reason the roster looked busy.**
+      `LeaderboardSource._stats` stamped `last_trade_at=time.time()` at
+      seat time, so every trader read `inactive_hours: 0` forever. Now
+      carries the board's REAL `timing.lastTrade`, and anchors
+      `first_trade_at` to the board window so trades/day is a real figure
+      too. `_refresh` also updates stats when a trader trades again (not
+      only on a rank change), so freshness stays live instead of freezing
+      at the admission value. **Verified live after restart: 0 of 42 seats
+      read the fabricated 0.0; real inactivity spans 0.4h–145.2h**, and
+      the operator can finally SEE which seats are dormant. Tests:
+      `test_seated_stats_carry_the_boards_real_last_trade`,
+      `test_freshness_updates_when_a_seated_trader_trades_again`.
+- [x] **Invisible wallets (publicnode's ~2-day retention).** New
+      `RpcRouter.call_accept(policy, method, params, accept)`: a result
+      that fails the predicate is a SOFT MISS — the router tries the next
+      source and returns the first accepted result, or the last miss if
+      none does better. A soft miss is NOT an error (the source stays
+      healthy, no failover counted), so a legitimately-quiet wallet never
+      trips a breaker. The tracker arms an unarmed, primary-invisible
+      wallet from a deeper source (`get_signatures(..., failover_on_empty
+      =True)`), bounded to one probe per `max(min_interval, 30s)` so a
+      genuinely history-less address costs almost nothing. Arming uses
+      first-contact semantics — no history replayed as live trades. New
+      counter `armed_from_deep`. **Verified live: all 5 dead seats
+      (watermark slot 0) armed at boot; 0 remain.** Tests:
+      `test_a_wallet_invisible_on_the_primary_is_armed_from_a_deeper_source`,
+      `test_a_genuinely_idle_wallet_is_not_armed_and_is_reprobed_cheaply`,
+      `test_once_armed_from_deep_the_wallet_polls_normally`, plus five
+      router `call_accept` tests.
+- [x] **Null `getTransaction` wedge.** The copy path now reads with
+      `get_transaction(sig, failover_on_null=True)`: publicnode's null for
+      an aged signature escalates to helius/mainnet_beta before the read
+      is called unreadable, so a transient or retention-edge null cannot
+      wedge a wallet. The default stays `failover_on_null=False` —
+      discovery fetches thousands of legitimately-null txs per candidate
+      and must NOT escalate each to the metered source. **Verified live:
+      an aged signature reads null on publicnode and OK via failover;**
+      the common poll still hits only publicnode (no fan-out, no metered
+      spend). Test:
+      `test_the_copy_path_escalates_a_null_transaction_to_a_deeper_source`.
+- [x] **Batch gear had no budget headroom.** The reservation was capped
+      at the poll interval, but 42 sub-calls need roster/rate seconds just
+      to accumulate against a source shared with discovery and health
+      probes. New `tracking.batch_reserve_headroom` (default 2.5):
+      `_batch_reserve_timeout = roster/rate * headroom + 1` — the wait
+      only, never the issue rate. **Verified live: the 42-wallet startup
+      batch reserved and ran with no "no budget" error** (previously it
+      failed every attempt). Tests:
+      `test_batch_reserve_timeout_exceeds_the_bare_interval_for_a_big_roster`,
+      `test_the_sweep_reserves_the_headroom_timeout_not_the_interval`.
+
+**Design note on the two `failover_*` flags.** They are opt-in per call
+site, not global defaults, and that is deliberate: the copy path treats a
+missed read as a missed trade (worth a metered escalation), while
+discovery hits nulls/empties by the thousand and must stay on the cheap
+source. Making failover the default would have quietly moved the discovery
+firehose onto Helius and burned the credit budget.
+
+### The recency floor is now the operator's to set — with the data in view
+
+The board's `max_last_trade_hours: 168` (7 days) is what seats a trader
+that last traded 145h ago (`7qjDDvNAp9gd`, live). That is a TRADING-POLICY
+number and stays the operator's call (loosen/tighten only in config, per
+[[Claude]]). What changed is that the fabricated-freshness fix now makes
+dormancy VISIBLE, so the decision can be made from data instead of blind:
+measured live, seats span 0.4h–145h idle. Tightening `max_last_trade_hours`
+toward ~24–48h is the cheapest lever on trade volume if the operator wants
+a livelier roster; left at 168 pending their call.
+
+### Still open (unchanged by this work)
+
+- [ ] Sanity-check the copy economics: the one live copy round-tripped
+      in 18 seconds for -20% (0.1541 SOL in, 0.1239 SOL out). One trade
+      proves nothing, but these wallets flip in seconds and our fill is
+      1-2s behind — judge the COPIES' paper PnL over days.
+- [ ] **Budget LANES** remain the proper fix for batch/tracking
+      contention (headroom is a mitigation, not a partition). Already
+      listed under the tracking-rework open items below.
+
+## Fixed — THE COMMITMENT BLACKOUT: why `signals_emitted` was exactly 0 (2026-08-20)
+
+Symptom: 104 minutes live, **6,238 clean polls**, `polls_failed: 1`,
+`gaps_detected: 0`, roster of 42 healthy — and `signals_emitted: 0`.
+Not "few". Exactly zero, which is the shape of a structural block, not
+a filter tuning problem.
+
+### The measurement chain
+
+1. **The tracker WAS seeing trades.** Replayed every signature in
+   `processed_signatures` through the real `TradeReconstructor`. Four
+   reconstructed cleanly, including a **110 SOL buy** and a **22.5 SOL
+   sell** marked handled ~30 seconds earlier. So detection worked and
+   the copy still never happened.
+2. **`stream_misses: 0`** — every detection arrived by push, none by
+   sweep. The push path delivers a signature at `confirmed`, about a
+   second after its block.
+3. **`getTransaction` carried no commitment**, so it defaulted to
+   `finalized`.
+4. **Measured the blackout directly** — the node's own slot heights:
+
+   ```
+   confirmed 440487962   finalized 440487931   gap 31 slots ≈ 12.4s
+   confirmed 440487974   finalized 440487942   gap 32 slots ≈ 12.8s
+   confirmed 440487984   finalized 440487952   gap 32 slots ≈ 12.8s
+   ```
+
+   **A ~12.6 second window in which a `finalized` read of a just-pushed
+   signature MUST return null.** The push arrives at ~1s. Every single
+   one landed inside it.
+
+### Two defects, and the second is the one that hurt
+
+**(a) Asking the wrong question.** We heard about the transaction at
+`confirmed` and then asked a `finalized`-only question about it.
+`TRANSACTION_OPTIONS` now pins `"commitment": "confirmed"` — the level
+we actually learn about trades at, and the level the watermark's reorg
+margin is already sized for.
+
+**(b) Null was recorded as "handled".** `_handle_signature` did:
+
+```python
+tx = self._provider.get_transaction(signature)
+trade = self._reconstructor.reconstruct(address, signature, tx)
+if trade is not None:
+    self._dispatch(address, trade)
+self._db.record_processed([(address, signature, slot or 0)])   # ALWAYS
+```
+
+`reconstruct(None)` returns None, so nothing dispatched — and the
+signature was written to the processed ledger anyway. **A transaction we
+could not READ was retired as though we had read it.** Even with the
+commitment fixed, any transient null would silently burn a trade
+forever. `_handle_signature` now returns a bool: on null it releases the
+claim, counts `status.unreadable`, and returns False. `_reconcile`
+breaks on False so the watermark stops short of it. Not readable yet is
+"come back", never "done".
+
+This is the same class of bug as the frozen watermark below — an absence
+of work being read as proof of completion.
+
+### Verified end-to-end, not just unit-tested
+
+Replayed real on-chain trades through the **real** engine (real config,
+risk, market data, Jupiter quoter) against a COPY of the DB. A buy on
+`EpXtn6xGoZ4Y` (mc $1.64M, liq $181k) **opened a position at 0.4487
+SOL** — the log-MC ladder landing mid-range exactly as designed. The
+engine, risk, sizing and executor were never the problem; nothing was
+ever reaching them.
+
+### Tests
+
+`test_tracker.py` +3, each confirmed RED on the pre-fix code:
+`test_a_transaction_that_is_not_readable_yet_is_retried_not_dropped`,
+`test_the_watermark_never_passes_an_unreadable_transaction`,
+`test_transactions_are_requested_at_the_commitment_we_hear_about_them`.
+
+### Standing lesson
+
+**Match the commitment you ASK at to the commitment you were TOLD at.**
+A confirmed-level notification followed by a finalized-level read is a
+guaranteed null for ~13 seconds, which is the entire window in which a
+copy is worth making. Both halves of that sentence were in the codebase,
+in different files, and neither was wrong on its own.
+
+### Found alongside — machine wallets flooding the ledger
+
+`8HS71C4LnwXx` produced **208 signatures in 1.4 minutes** (~2.5/s,
+~214k/day) against a `max_trades_per_day: 400` filter. It passes because
+Solana Tracker counts *trades*, not *transactions* — 67 of 71 sampled
+were non-swaps. Not a correctness bug (per-wallet budgets break cleanly,
+`gaps_detected: 0`), but it dominates the processed ledger and burns
+push-path `getTransaction` calls. See the open task below.
+
 ## Done — TRACKING REWORK: measured polling, source router, HFT removed (2026-08-19)
 
 Operator brief: consistent few-second visibility on followed wallets,
@@ -625,7 +913,71 @@ quiet before it looks busy.
       one absence is as likely a service hiccup as a real change, and
       evicting on it would churn the roster on every bad API minute.
 
+## Fixed — we were gating on a feed that does not cover the pools (2026-08-20)
+
+Operator asked whether buying at launch was even possible for us, and
+suspected sniping. Neither turned out to be the case, and the question
+uncovered the reason most trades were being refused.
+
+### It is not sniping
+
+The pools these traders buy are **3-4 hours old**, not fresh launches,
+and their buys are 0.37-3.19 SOL. Nothing about it needs sub-second
+execution.
+
+### The bug: two sources of truth, and we asked the wrong one
+
+The risk engine gates on `token.liquidity_usd` from DexScreener. The
+executor trades through Jupiter. For these pools the two disagree
+completely:
+
+    8 of 8 tokens: DexScreener liquidity $0
+                   Jupiter routes them at 0.07% - 1.63% impact
+
+At our ladder size (0.010 SOL for a ~$2.4k mcap token) measured impact
+was 0.03%-2.48%. At 1 SOL it would be 3.2%-7.2% — so the market-cap
+ladder was already sizing us correctly; only the gate was wrong.
+
+"No depth REPORTED" and "no depth" are different claims, and this is the
+one place where confusing them costs every trade in the token.
+
+- [x] `RiskEngine.evaluate_entry` takes an optional `fill_probe`. When
+      the feed reports no usable depth, it asks the venue we would
+      actually trade through for the price impact of THIS order size,
+      and allows the trade when that clears
+      `risk.max_price_impact_pct` (3%). No route still means no fill —
+      that is an answer, not a missing one.
+- [x] The probe is never consulted when the feed HAS depth, so the
+      common path costs nothing: one quote per trade that would
+      otherwise have been refused outright.
+
+### Result, measured live on the same real buys
+
+    tradable BEFORE the probe:  3/14  (21%)
+    tradable WITH  the probe : 14/14  (100%)
+
+    ~280 real buys/day  ->  ~280 trades/day, up from ~60
+
+### What this does NOT do
+
+The probe answers "can we fill it", not "is it worth filling". A
+routable rugpull passes it. What limits the damage is the market-cap
+ladder: those tokens size to 0.01 SOL (~$2), and the traders producing
+the signals run 79-97% win rates.
+
 ## Open — from this rework
+
+- [ ] **Machine wallets pass the trades/day filter by counting the wrong
+      thing.** `8HS71C4LnwXx` did 208 signatures in 1.4 min (~214k/day)
+      against `max_trades_per_day: 400`, because Solana Tracker reports
+      *trades* while the chain shows *transactions* (67 of 71 sampled
+      were non-swaps). Harmless to correctness — per-wallet budgets
+      break cleanly and `gaps_detected` stayed 0 — but it dominates the
+      processed ledger and spends push-path `getTransaction` calls on
+      noise. Options: a transactions-per-minute observation gate in the
+      tracker that demotes a flooding wallet, or reuse the discovery
+      `machine-frequency` pre-screen on leaderboard names too (today
+      Stream A skips screening entirely, by design).
 
 - [ ] The roster's realized-PnL winners trade ultra-thin pump.fun pools
       (a $2.4k-cap token with $0 liquidity). At `per_trade_fraction:

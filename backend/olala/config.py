@@ -165,6 +165,16 @@ class TrackingConfig:
     # watermark. 1000 is the API maximum.
     catchup_signatures: int = 1000
     max_transactions_per_cycle: int = 60
+    # Headroom for the BATCH gear's budget reservation. A batch of N
+    # wallets needs N sub-calls, which at the source ceiling takes
+    # N / rate seconds to accumulate — but the tracking source is shared
+    # with discovery, health probes and copy fetches, so the batch rarely
+    # has the full rate to itself. This multiplies the theoretical
+    # accumulation time to give the reservation room to succeed under
+    # that contention instead of being refused (which is what left a
+    # 42-wallet startup sweep failing every attempt). It only widens how
+    # long the reservation may WAIT; it never raises the issue rate.
+    batch_reserve_headroom: float = 2.5
     # A signal older than this may not OPEN a position: after an outage
     # the backlog would otherwise buy into trades already exited. Exits
     # are never blocked by age.
@@ -230,6 +240,12 @@ class RiskConfig:
     # An order smaller than this is not worth its fees. Keep it at or
     # below `min_trade_sol`, or the smallest tokens are refused outright.
     min_order_sol: float = 0.01
+    # Ceiling on the price impact of ONE order, as a percent, used when
+    # the price feed reports no pool depth. `max_liquidity_fraction`
+    # estimates impact from reported liquidity; this measures it, by
+    # asking the venue we would actually trade through. MEASURED: pools
+    # DexScreener shows at $0 routed at 0.03%-2.48% for our size.
+    max_price_impact_pct: float = 3.0
     # A single position may never exceed this multiple of the wallet's
     # per-trade share, whatever the sizing model computes.
     max_position_equity_multiple: float = 2.0

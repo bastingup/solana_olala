@@ -93,6 +93,13 @@ class TrackingStatus:
     gaps_detected: int = 0
     #: Trades the poll caught that the push stream never reported.
     stream_misses: int = 0
+    #: Transactions the node could not serve yet, left for a later cycle
+    #: rather than recorded as handled.
+    unreadable: int = 0
+    #: Followed wallets the tracking source could not see at all, armed
+    #: instead from a deeper-history source. Without this they sat at
+    #: watermark slot 0 forever — a dead seat that looked healthy.
+    armed_from_deep: int = 0
     #: Wallets re-armed after a gap that could not be bridged. Each one
     #: means trades were skipped — and that the wallet is being watched
     #: again rather than left blind.
@@ -142,6 +149,8 @@ class TrackingStatus:
             "stale_entries_blocked": self.stale_entries_blocked,
             "gaps_detected": self.gaps_detected,
             "stream_misses": self.stream_misses,
+            "unreadable": self.unreadable,
+            "armed_from_deep": self.armed_from_deep,
             "gap_rearmed": self.gap_rearmed,
             "legacy_upgraded": self.legacy_upgraded,
             "legacy_rearmed": self.legacy_rearmed,
@@ -182,6 +191,10 @@ class WalletTracker(Daemon):
         self._watermarks: dict[str, Watermark] = {}
         self._processed: dict[str, dict[str, int]] = {}
         self._last_seen: dict[str, float] = {}
+        # When an unarmed, primary-invisible wallet was last probed on a
+        # deeper source, so the escalation is bounded rather than run every
+        # tick for a wallet with genuinely no history anywhere.
+        self._arm_probe_at: dict[str, float] = {}
         self._cursor_index = 0
         self._next_batch_at = 0.0
         self._last_sweep_at = 0.0
@@ -377,7 +390,7 @@ class WalletTracker(Daemon):
             self.status.full_coverage_sec = interval
             now = time.monotonic()
             if now >= self._next_batch_at:
-                self._sweep(roster, interval)
+                self._sweep(roster)
                 # Scheduled from COMPLETION, so a slow sweep skips the
                 # cycle it overran instead of stacking another on top.
                 after = time.monotonic()
@@ -406,6 +419,7 @@ class WalletTracker(Daemon):
             for address in stale:
                 self._processed.pop(address, None)
                 self._last_seen.pop(address, None)
+                self._arm_probe_at.pop(address, None)
 
     def _derived_interval(self, roster_size: int,
                           source_name: str | None) -> float:
@@ -422,6 +436,27 @@ class WalletTracker(Daemon):
         if ceiling <= 0:
             return floor
         return max(floor, math.ceil(roster_size / ceiling))
+
+    def _batch_reserve_timeout(self, roster_size: int) -> float:
+        """How long the batch reservation may WAIT for budget.
+
+        Derived from cost (one sub-call per wallet) against the tracking
+        source's ceiling, times a headroom multiplier — because that
+        source is shared, so the batch cannot assume the whole rate. This
+        never changes the issue rate; it only stops a shared-but-healthy
+        source from refusing a sweep it could serve given a moment more.
+        """
+        config = self._store.config
+        tracking = config.tracking
+        source_name = (self._router.batch_capable(TRACKING_POLICY)
+                       if self._router is not None else None)
+        source = config.sources.get(source_name or "")
+        rate = source.max_wallet_calls_per_sec if source else 0.0
+        headroom = max(tracking.batch_reserve_headroom, 1.0)
+        if rate <= 0:
+            return max(tracking.min_interval_sec, 1.5)
+        accumulate = roster_size / rate
+        return max(tracking.min_interval_sec, accumulate * headroom + 1.0)
 
     # -- gears -------------------------------------------------------------
 
@@ -447,8 +482,12 @@ class WalletTracker(Daemon):
             self._note_poll(True, f"{address[:8]} refreshed", position)
         self._mark_swept()
 
-    def _sweep(self, roster: list[str], interval: float) -> None:
-        """Every followed wallet in one batched request."""
+    def _sweep(self, roster: list[str]) -> None:
+        """Every followed wallet in one batched request.
+
+        The reservation budget is derived from cost here, not from the
+        poll interval — see :meth:`_batch_reserve_timeout`.
+        """
         config = self._store.config.tracking
         items = [BatchItem("getSignaturesForAddress",
                            [address,
@@ -456,12 +495,16 @@ class WalletTracker(Daemon):
                            cost=1.0)
                  for address in roster]
         try:
-            # The sweep may wait up to its own interval for budget — the
-            # interval was derived from that same rate, so a batch that
-            # cannot be funded within it means the roster has outgrown
-            # the source, which the next tick's derivation will widen.
+            # Budget wait is derived from COST, not borrowed from the poll
+            # interval. The interval is the cadence; the reservation needs
+            # roster / rate seconds just to ACCUMULATE, and the tracking
+            # source is shared with discovery and health probes — so the
+            # wait carries a headroom multiplier or a busy source refuses
+            # every sweep (measured: a 42-wallet startup batch failed at
+            # the bare 5.0s interval on every attempt).
+            timeout = self._batch_reserve_timeout(len(roster))
             results = self._router.batch(TRACKING_POLICY, items,
-                                         timeout=interval)
+                                         timeout=timeout)
         except (ChainError, NoSourceAvailable) as exc:
             # The sweep failed wholesale; the next tick re-evaluates the
             # gear, which is how a dead batch source becomes round-robin.
@@ -571,6 +614,15 @@ class WalletTracker(Daemon):
         if not watermark.armed:
             if walk.newest is not None:
                 self._advance(address, walk.newest)
+            else:
+                # The tracking source returned NOTHING for a wallet we
+                # deliberately followed — so it has history, this source
+                # just cannot see it (publicnode keeps ~2 days). Left
+                # unarmed, the seat is dead: slot stays 0 and every poll
+                # reports a clean but empty result. Escalate to a deeper
+                # source to arm it. Bounded per wallet so a genuinely
+                # empty address is not re-probed every tick.
+                self._maybe_arm_from_deep(address)
             return
         if _is_legacy(watermark) and walk.matched is not None:
             # A pre-slot cursor that IS still visible: teach it its own
@@ -607,8 +659,12 @@ class WalletTracker(Daemon):
                 # watermark stops here, so nothing is skipped.
                 break
             fetched += 1
-            self._handle_signature(address, signature,
-                                   int(entry.get("slot") or 0))
+            if not self._handle_signature(address, signature,
+                                          int(entry.get("slot") or 0)):
+                # Unreadable for now. Stop here: advancing over it would
+                # skip the trade permanently, which is the one thing the
+                # watermark exists to prevent.
+                break
             last_handled = entry
 
         if last_handled is not None:
@@ -651,8 +707,53 @@ class WalletTracker(Daemon):
         return self._provider.get_signatures(address, limit=limit,
                                              before=before)
 
+    def _arm_probe_interval(self) -> float:
+        """How long to wait before re-probing an invisible wallet.
+
+        Long enough that a genuinely history-less address costs almost
+        nothing (one metered read every interval), short enough that a
+        wallet made visible by a lagging source is armed promptly.
+        """
+        return max(self._store.config.tracking.min_interval_sec, 30.0)
+
+    def _maybe_arm_from_deep(self, address: str) -> None:
+        """Arm an unarmed, primary-invisible wallet from a deeper source.
+
+        Only fires while the wallet is unarmed and only after the primary
+        returned empty, so there is no cost on the hot path. Arming at the
+        newest entry is exactly first-contact behaviour — history is NOT
+        replayed as live trades. Once armed, ordinary polling resumes on
+        the tracking source; any NEW trade the wallet makes lands within
+        that source's retention and is seen normally.
+        """
+        now = time.time()
+        with self._lock:
+            last = self._arm_probe_at.get(address, 0.0)
+            if now - last < self._arm_probe_interval():
+                return
+            self._arm_probe_at[address] = now
+        try:
+            page = self._provider.get_signatures(
+                address, limit=1, before=None, failover_on_empty=True)
+        except (ChainError, NoSourceAvailable) as exc:
+            self._note_error(f"{address[:8]}: deep arm read failed: {exc}")
+            return
+        if not page:
+            # No history on ANY source — a genuinely idle address. Leave
+            # it unarmed; the throttle keeps the re-probe cheap.
+            return
+        newest = page[0]
+        logger.info(
+            "%s is invisible on the tracking source; armed at slot %s from "
+            "a deeper source so the seat is no longer dead",
+            address[:8], newest.get("slot"))
+        self.status.armed_from_deep += 1
+        self._advance(address, newest)
+        with self._lock:
+            self._last_seen[address] = now
+
     def _handle_signature(self, address: str, signature: str,
-                          slot: int, via_push: bool = False) -> None:
+                          slot: int, via_push: bool = False) -> bool:
         """Claim, fetch, reconstruct, dispatch, persist.
 
         The CLAIM comes first and is atomic. The push path runs on the
@@ -666,11 +767,30 @@ class WalletTracker(Daemon):
         Persisting comes last: an unexpected failure then leaves the
         signature claimed in memory but not on disk, so a restart
         retries it rather than losing the copy silently.
+
+        Returns whether the signature was actually READ. A transaction
+        the node cannot serve yet is not "handled" — recording it as
+        such skipped it forever, which is how a fresh trade delivered by
+        the push stream one second after its block could vanish.
         """
         if not self._claim(address, signature, slot or 0):
-            return
+            return True                 # someone else already has it
         try:
-            tx = self._provider.get_transaction(signature)
+            # Escalate a null across history sources before giving up: the
+            # tracking source keeps only ~2 days of history, so an aged
+            # signature reads null there while a deeper source still serves
+            # it. On the copy path a missed read is a missed trade.
+            tx = self._provider.get_transaction(signature,
+                                                failover_on_null=True)
+            if tx is None:
+                # Not readable yet on ANY source. Give the claim back and
+                # leave the cursor short of it so the next cycle tries
+                # again — "not yet", never "nothing".
+                self._release(address, signature)
+                self.status.unreadable += 1
+                logger.debug("%s not readable on any source yet; retrying "
+                             "next cycle", signature[:12])
+                return False
             trade = self._reconstructor.reconstruct(address, signature, tx)
             if trade is not None:
                 if not via_push:
@@ -684,6 +804,7 @@ class WalletTracker(Daemon):
             self._release(address, signature)
             raise
         self._db.record_processed([(address, signature, slot or 0)])
+        return True
 
     def _claim(self, address: str, signature: str, slot: int) -> bool:
         """Take exclusive responsibility for one signature, or decline.

@@ -38,7 +38,10 @@ class FakeProvider:
     def signature_reads_for(self, address) -> int:
         return self.signature_calls.get(address, 0)
 
-    def get_signatures(self, address, limit=100, before=None):
+    def get_signatures(self, address, limit=100, before=None,
+                       failover_on_empty=False):
+        # A single-source fake has nothing to fail over to, so the flag is
+        # accepted (the real provider's signature carries it) and ignored.
         self.signature_calls[address] = self.signature_calls.get(address, 0) + 1
         entries = self.signatures.get(address, [])
         if before is not None:
@@ -47,7 +50,7 @@ class FakeProvider:
                 entries = entries[signatures.index(before) + 1:]
         return entries[:limit]
 
-    def get_transaction(self, signature):
+    def get_transaction(self, signature, failover_on_null=False):
         if signature in self.fail_transactions:
             from olala.chain.provider import ChainError
             raise ChainError(f"scripted failure for {signature}")

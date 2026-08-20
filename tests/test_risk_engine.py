@@ -140,3 +140,59 @@ def test_unpriceable_token_rejected():
     token = make_token(price_sol=0.0, price_usd=0.0)
     verdict = evaluate(token=token)
     assert not verdict.approved
+
+
+# -- when the price feed reports no depth ---------------------------------
+#
+# MEASURED on the live roster: of 16 real buys by followed traders, 12
+# were into pools DexScreener showed at $0 liquidity while Jupiter routed
+# them at 0.03%-2.48% impact for our order size. They were ordinary 3-4
+# hour old pump.fun pools the feed does not index — not empty ones. We
+# were refusing 70% of our trades over a data-coverage gap.
+
+def test_no_reported_depth_asks_the_venue_before_refusing():
+    token = make_token(market_cap_usd=2_400.0, liquidity_usd=0.0)
+    probed = []
+
+    def probe(mint, size_sol):
+        probed.append((mint, size_sol))
+        return 0.8                       # percent impact, comfortably fine
+
+    verdict = evaluate_with_probe(token, probe)
+    assert verdict.approved
+    assert probed and probed[0][0] == token.mint
+    # It is asked about the size we would actually send.
+    assert probed[0][1] == pytest.approx(verdict.size_sol, abs=1e-9)
+
+
+def test_a_venue_that_cannot_route_it_is_still_a_refusal():
+    """No route means no fill — that IS the answer, not a missing one."""
+    token = make_token(market_cap_usd=2_400.0, liquidity_usd=0.0)
+    verdict = evaluate_with_probe(token, lambda mint, size: None)
+    assert not verdict.approved
+    assert "liquidity" in verdict.reason
+
+
+def test_too_much_price_impact_is_refused():
+    token = make_token(market_cap_usd=2_400.0, liquidity_usd=0.0)
+    config = AppConfig()
+    verdict = evaluate_with_probe(
+        token, lambda mint, size: config.risk.max_price_impact_pct + 5.0,
+        config=config)
+    assert not verdict.approved
+
+
+def test_the_venue_is_not_consulted_when_the_feed_has_depth():
+    """One quote per otherwise-refused trade, never on the common path."""
+    token = make_token(liquidity_usd=800_000.0)
+    calls = []
+    verdict = evaluate_with_probe(
+        token, lambda mint, size: calls.append(size) or 0.1)
+    assert verdict.approved
+    assert calls == []
+
+
+def evaluate_with_probe(token, probe, config=None):
+    return RiskEngine().evaluate_entry(
+        config or AppConfig(), token,
+        exposure(cash=7.0, equity=10.0), False, probe)

@@ -153,6 +153,47 @@ def test_leaderboard_names_are_followed_directly(tmp_path, db, bus):
         assert provider.signature_reads_for(profile.address) == 0
 
 
+def test_seated_stats_carry_the_boards_real_last_trade(tmp_path, db, bus):
+    """Stamping last_trade_at to now made every seated trader read
+    `inactive_hours: 0` forever — the one number that would show a quiet
+    roster, hardcoded to lie. It must carry the board's real value."""
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 3\n")
+    six_hours_ago = time.time() - 6 * 3600
+    tracker = FakeTracker(traders=[nominee(i, last_trade_at=six_hours_ago)
+                                   for i in range(3)])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    for profile in registry.followed():
+        assert profile.stats.last_trade_at == pytest.approx(six_hours_ago)
+        # ~6 hours idle, not a fabricated zero.
+        assert 5.5 < profile.stats.inactive_hours < 6.5
+        # first_trade_at anchors to the board window, so trades/day is a
+        # real figure rather than a division by a zero first-trade.
+        assert profile.stats.trades_per_day > 0
+
+
+def test_freshness_updates_when_a_seated_trader_trades_again(tmp_path, db, bus):
+    """A later sweep reporting a NEWER last-trade must refresh the stored
+    stats even when the board rank is unchanged, so the freshness display
+    tracks reality instead of freezing at the admission-day value."""
+    store = store_with(tmp_path, "discovery:\n  max_followed_traders: 1\n")
+    entry = nominee(0, last_trade_at=time.time() - 6 * 3600)
+    tracker = FakeTracker(traders=[entry])
+    _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
+    daemon._harvest_candidates(store.config, budget_for(store))
+    assert registry.get(entry["address"]).stats.inactive_hours > 5
+
+    # Same trader, same rank, but it just traded — and the throttle is
+    # cleared so the next sweep re-polls.
+    entry["last_trade_at"] = time.time() - 60
+    daemon.leaderboard._last_poll_at = 0.0
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    assert registry.get(entry["address"]).stats.inactive_hours < 1
+
+
 def test_board_position_is_the_score(tmp_path, db, bus):
     """Score follows the configured ranking, not the win-rate field —
     a wallet that never sells its losers reports ~100%."""

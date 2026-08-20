@@ -178,6 +178,25 @@ class RpcRouter:
             policy, method, cost,
             lambda source: source.call(method, params))
 
+    def call_accept(self, policy: str, method: str, params: list[Any],
+                    accept: Callable[[Any], bool], cost: float = 1.0) -> Any:
+        """Like :meth:`call`, but a result that fails ``accept`` is a SOFT
+        miss, not an answer: the router remembers it and tries the next
+        source, returning the first result ``accept`` approves — or the
+        last soft miss if none does.
+
+        This is how a ``null`` ``getTransaction`` or an empty
+        ``getSignaturesForAddress`` on a shallow-history source escalates
+        to a deeper one, WITHOUT treating a legitimately-empty answer as
+        an error (which would fail over on every quiet wallet and trip
+        breakers on healthy sources). A source that returns a soft miss
+        still answered, so it counts as a success and its breaker closes —
+        it simply could not serve THIS request as fully as another might.
+        """
+        return self._run(
+            policy, method, cost,
+            lambda source: source.call(method, params), accept=accept)
+
     def batch(self, policy: str, items: list[BatchItem],
               timeout: float | None = None) -> list[Any]:
         """One batched request, served by a batch-capable source.
@@ -233,13 +252,20 @@ class RpcRouter:
         return self._sources[name]
 
     def _run(self, policy: str, method: str, cost: float,
-             action: Callable[[JsonRpcSource], Any]) -> Any:
+             action: Callable[[JsonRpcSource], Any],
+             accept: Callable[[Any], bool] | None = None) -> Any:
         candidates = self._policies.get(policy)
         if not candidates:
             raise NoSourceAvailable(f"routing policy {policy!r} has no source")
 
         last_error: Exception | None = None
         skipped: list[str] = []
+        # A source that answered but not to ``accept``'s satisfaction — a
+        # null tx from a shallow node, say. Held as the fallback so the
+        # honest empty answer is still returned if no deeper source does
+        # better, instead of raising as though nothing answered at all.
+        soft_miss: Any = None
+        have_soft_miss = False
         for name in candidates:
             source = self._sources[name]
             breaker = self._breakers[name]
@@ -274,8 +300,20 @@ class RpcRouter:
                 continue
             breaker.record_success()
             self._count(name)
+            if accept is not None and not accept(result):
+                # It answered, so it is healthy — but a deeper source may
+                # serve this particular request more fully. Keep looking.
+                soft_miss = result
+                have_soft_miss = True
+                logger.debug("%s served %s but the result was a soft miss; "
+                             "trying a deeper source", name, method)
+                continue
             return result
 
+        if have_soft_miss:
+            # No source did better than the soft miss; return it verbatim
+            # so the caller still gets the honest null / empty answer.
+            return soft_miss
         raise self._exhausted(policy, method, candidates, skipped, last_error)
 
     def _exhausted(self, policy: str, method: str, candidates: list[str],

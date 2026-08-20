@@ -16,6 +16,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from typing import Callable
+
 from ..config import AppConfig, RiskConfig
 from ..domain.models import RiskVerdict, TokenInfo
 
@@ -76,7 +78,9 @@ class WalletExposure:
 class RiskEngine:
     def evaluate_entry(self, config: AppConfig, token: TokenInfo,
                        exposure: WalletExposure,
-                       is_resize: bool) -> RiskVerdict:
+                       is_resize: bool,
+                       fill_probe: Callable[[str, float], float | None]
+                       | None = None) -> RiskVerdict:
         risk = config.risk
         if token.price_sol <= 0 or token.price_usd <= 0:
             return RiskVerdict(False, "no usable price for token")
@@ -103,6 +107,7 @@ class RiskEngine:
                              exposure.invested_in_mint_sol)
         liquidity_cap_sol = (token.liquidity_usd * risk.max_liquidity_fraction
                              ) / sol_usd - fleet_invested
+        probed_impact: float | None = None
 
         # Reserve: a fraction of equity is held back so re-sizes can follow
         # a trader into dips. New entries only spend above the reserve.
@@ -120,6 +125,24 @@ class RiskEngine:
         # would be.
         position_cap_sol = (target_sol * risk.max_position_equity_multiple
                             ) - exposure.invested_in_mint_sol
+
+        if liquidity_cap_sol <= 0 and fill_probe is not None:
+            # The price feed reports no depth — but "no depth REPORTED"
+            # and "no depth" are different claims, and this is the one
+            # place where being wrong costs us every trade in the token.
+            # MEASURED: of 16 real buys by followed traders, 12 were
+            # into pools DexScreener showed at $0 while Jupiter routed
+            # them at 0.03%-2.48% impact for our order size. Those are
+            # ordinary 3-4 hour old pump.fun pools the feed does not
+            # index, not empty ones.
+            #
+            # So ask the venue we would actually trade through. Price
+            # impact for THIS size is a direct measurement of the thing
+            # the 1%-of-pool rule only estimates.
+            probed_impact = fill_probe(token.mint, target_sol)
+            if probed_impact is not None \
+                    and probed_impact <= risk.max_price_impact_pct:
+                liquidity_cap_sol = target_sol
 
         size = min(target_sol, liquidity_cap_sol, available_sol,
                    position_cap_sol)

@@ -79,11 +79,18 @@ class RpcProvider(ABC):
     # -- public surface ----------------------------------------------------
 
     def get_signatures(self, address: str, limit: int = 100,
-                       before: str | None = None) -> list[dict[str, Any]]:
+                       before: str | None = None,
+                       failover_on_empty: bool = False) -> list[dict[str, Any]]:
+        # ``failover_on_empty`` is honoured only by a multi-source
+        # provider (see :class:`RoutedProvider`). A single-source provider
+        # has nothing to fail over to, so it ignores the flag.
         return self._call("getSignaturesForAddress",
                           [address, signatures_params(limit, before)]) or []
 
-    def get_transaction(self, signature: str) -> dict[str, Any] | None:
+    def get_transaction(self, signature: str,
+                        failover_on_null: bool = False
+                        ) -> dict[str, Any] | None:
+        # ``failover_on_null`` is honoured only by a multi-source provider.
         return self._call("getTransaction", [signature, TRANSACTION_OPTIONS])
 
     def get_sol_balance(self, address: str) -> float:
@@ -168,8 +175,16 @@ class RpcProvider(ABC):
 
 
 MAX_MULTIPLE_ACCOUNTS = 100
+# `confirmed`, not the node default of `finalized`. The push stream
+# tells us about a transaction at CONFIRMED, roughly a second after the
+# block; finalization takes ~13s more. Asking a finalized-only question
+# about a transaction we heard of at confirmed gets `null` back — and a
+# null read used to be recorded as "handled", so the trade was skipped
+# permanently. Confirmed is also what our watermark's reorg margin is
+# sized for.
 TRANSACTION_OPTIONS = {"encoding": "jsonParsed",
-                       "maxSupportedTransactionVersion": 0}
+                       "maxSupportedTransactionVersion": 0,
+                       "commitment": "confirmed"}
 SEND_OPTIONS = {"encoding": "base64", "skipPreflight": False}
 
 
@@ -215,6 +230,54 @@ class RoutedProvider(RpcProvider):
     def _call(self, method: str, params: list[Any]) -> Any:
         return self._router.call(METHOD_POLICY.get(method, "history"),
                                  method, params)
+
+    def get_transaction(self, signature: str,
+                        failover_on_null: bool = False
+                        ) -> dict[str, Any] | None:
+        """Fetch one transaction, optionally escalating a ``null``.
+
+        publicnode keeps only ~2 days of signature history (MEASURED),
+        so an aged signature reads back ``null`` there while Helius and
+        mainnet-beta still serve it. Routing never failed over on ``null``
+        because ``null`` is not an error — a shallow node answered
+        correctly, it simply could not see that far back. On the COPY
+        path a ``null`` is the difference between reconstructing a trade
+        and losing it, so the tracker asks with ``failover_on_null=True``
+        and a deeper source is tried before the read is called unreadable.
+
+        The default stays ``False``: discovery fetches thousands of
+        transactions per candidate and hits many legitimate nulls
+        (pruned, unreconstructable), and escalating every one of those to
+        the metered source would burn the credit budget for no gain.
+        """
+        if not failover_on_null:
+            return self._call("getTransaction", [signature, TRANSACTION_OPTIONS])
+        return self._router.call_accept(
+            "history", "getTransaction", [signature, TRANSACTION_OPTIONS],
+            accept=lambda result: result is not None)
+
+    def get_signatures(self, address: str, limit: int = 100,
+                       before: str | None = None,
+                       failover_on_empty: bool = False) -> list[dict[str, Any]]:
+        """List an address's signatures, optionally escalating an EMPTY page.
+
+        A wallet whose newest transaction predates publicnode's ~2-day
+        retention returns zero signatures there — indistinguishable, to a
+        single source, from a wallet that simply has not traded. When the
+        caller KNOWS the wallet has history (a leaderboard-seated trader
+        that cannot be armed), ``failover_on_empty=True`` escalates to a
+        deeper source rather than leaving the wallet silently invisible.
+
+        The default stays ``False`` so the common poll — where an empty
+        page genuinely means "nothing new" — never fans out across
+        sources or spends metered credits.
+        """
+        params = signatures_params(limit, before)
+        if not failover_on_empty:
+            return self._call("getSignaturesForAddress", [address, params]) or []
+        return self._router.call_accept(
+            "history", "getSignaturesForAddress", [address, params],
+            accept=lambda result: bool(result)) or []
 
     @contextlib.contextmanager
     def broadcast_session(self) -> Iterator["BroadcastSession"]:

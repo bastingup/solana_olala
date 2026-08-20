@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import time
 
+from ..constants import SECONDS_PER_DAY
 from ..domain.models import TraderStats, TraderStatus
 from ..events import EventBus
 from ..services.traders import TraderRegistry
@@ -84,6 +85,10 @@ class LeaderboardSource:
         """
         self._last_poll_at = time.time()
         board = config.filters_solanatracker
+        # Anchors the DISPLAYED history span for seated traders (see
+        # `_stats`), so trades/day and inactivity read as the service's
+        # real figures rather than a fabrication.
+        self._board_window_days = board.window_days
         entries = self._tracker.top_traders(
             window_days=board.window_days,
             limit=board.limit,
@@ -186,8 +191,16 @@ class LeaderboardSource:
         return retired
 
     def _refresh(self, profile, entry: dict, score: float) -> None:
-        """Bring a known trader's score and stats up to date."""
-        if score == profile.score:
+        """Bring a known trader's score and stats up to date.
+
+        Refreshes when the board RANK changed, or when the trader has
+        traded more recently than the stats we hold — the latter keeps
+        the freshness display live so a trader that goes quiet visibly
+        ages instead of forever reading as active.
+        """
+        new_last = float(entry.get("last_trade_at") or 0.0)
+        old_last = profile.stats.last_trade_at if profile.stats else 0.0
+        if score == profile.score and new_last <= old_last:
             return
         previous = profile.score
         profile.score = score
@@ -257,20 +270,32 @@ class LeaderboardSource:
             return 0.0
         return round((total - position) / total, 4)
 
-    @staticmethod
-    def _stats(entry: dict) -> TraderStats:
+    def _stats(self, entry: dict) -> TraderStats:
         """Shape the service's numbers into TraderStats for display.
 
         These are the SERVICE's measurements, not ours; a later on-chain
         scan would overwrite them.
+
+        ``last_trade_at`` is the board's REAL ``timing.lastTrade``, not
+        ``time.time()``. Stamping it to "now" made every seated trader
+        report ``inactive_hours: 0`` forever — the one number that would
+        have told the operator the roster had gone quiet, hardcoded to say
+        the opposite. ``first_trade_at`` is anchored to the board window
+        so the displayed history span and trades/day are the service's
+        real figures rather than an artefact of a zero first-trade.
         """
         trades = int(entry.get("trade_count") or 0)
         win_rate = entry.get("win_rate") or 0.0
         round_trips = max(trades // 2, 0)
+        last_trade_at = float(entry.get("last_trade_at") or 0.0)
+        window_days = getattr(self, "_board_window_days", 0) or 0
+        first_trade_at = (last_trade_at - window_days * SECONDS_PER_DAY
+                          if last_trade_at and window_days else 0.0)
         return TraderStats(
             address=entry["address"],
             total_trades=trades,
             closed_round_trips=round_trips,
             wins=int(round(round_trips * win_rate)),
-            last_trade_at=time.time(),
+            first_trade_at=first_trade_at,
+            last_trade_at=last_trade_at,
         )

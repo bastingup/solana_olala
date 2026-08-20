@@ -12,6 +12,7 @@ import logging
 from typing import Callable
 
 from ..chain.jupiter import JupiterError
+from ..constants import LAMPORTS_PER_SOL, SOL_MINT
 from ..chain.market_data import FILL_PRICE_MAX_AGE_SEC, MarketDataService
 from ..chain.provider import ChainError
 from ..config import ConfigStore
@@ -35,7 +36,8 @@ class TradingEngine:
                  safety: TokenSafetyScreen, risk: RiskEngine, bus: EventBus,
                  paper_executor: TradeExecutor,
                  live_executor: TradeExecutor,
-                 tracking_health: Callable[[str], str] | None = None) -> None:
+                 tracking_health: Callable[[str], str] | None = None,
+                 quoter=None) -> None:
         self._store = store
         self._portfolio = portfolio
         self._registry = registry
@@ -48,6 +50,8 @@ class TradingEngine:
         # Returns a non-empty reason when a trader cannot currently be
         # watched, which blocks ENTRIES only.
         self._tracking_health = tracking_health
+        # Asked for a real price impact when the feed reports no depth.
+        self._quoter = quoter
 
     def _wallet_may_trade(self, wallet: Wallet) -> bool:
         """Paper wallets always simulate; live wallets trade only while
@@ -64,6 +68,27 @@ class TradingEngine:
             # wallet to any executor.
             raise ExecutionError("live wallet is disarmed")
         return self._live_executor
+
+    def _fill_probe(self, mint: str, size_sol: float) -> float | None:
+        """Price impact of buying ``size_sol`` of ``mint``, as a percent.
+
+        Only consulted when the price feed reports no pool depth, so the
+        cost is one quote on trades that would otherwise be refused
+        outright. Returns None when the venue cannot route it at all —
+        which IS the answer: no route means no fill.
+        """
+        if self._quoter is None:
+            return None
+        try:
+            quote = self._quoter.get_quote(
+                SOL_MINT, mint, int(size_sol * LAMPORTS_PER_SOL))
+        except (JupiterError, ChainError) as exc:
+            logger.info("no route for %s at %.4f SOL: %s",
+                        mint[:8], size_sol, exc)
+            return None
+        if not quote or not int(quote.get("outAmount") or 0):
+            return None
+        return abs(float(quote.get("priceImpactPct") or 0.0)) * 100.0
 
     def _blind_reason(self, trader: str) -> str:
         """Why this trader may not be ENTERED right now, if so."""
@@ -133,7 +158,8 @@ class TradingEngine:
         is_resize = self._portfolio.find_open(
             wallet.id, signal.trader, signal.mint) is not None
         exposure = self._portfolio.exposure(wallet.id, signal.mint)
-        verdict = self._risk.evaluate_entry(config, token, exposure, is_resize)
+        verdict = self._risk.evaluate_entry(config, token, exposure,
+                                            is_resize, self._fill_probe)
         if not verdict.approved:
             self._reject(signal, wallet, verdict.reason)
             return

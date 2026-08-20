@@ -90,7 +90,8 @@ class AppContext:
             live_executor=LiveJupiterExecutor(
                 jupiter, self.provider, self.keystore,
                 on_receipt=self.record_receipt),
-            tracking_health=lambda trader: self.tracker.blind_reason(trader))
+            tracking_health=lambda trader: self.tracker.blind_reason(trader),
+            quoter=jupiter)
         # Detection and execution run at wildly different speeds, so the
         # tracker never calls the engine directly: it enqueues, and
         # workers execute. One confirming swap must not stop every other

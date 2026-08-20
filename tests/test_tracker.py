@@ -641,7 +641,7 @@ def test_the_push_path_and_the_sweep_cannot_copy_the_same_trade(
     barrier = threading.Barrier(2, timeout=5)
     original = provider.get_transaction
 
-    def slow_fetch(signature):
+    def slow_fetch(signature, failover_on_null=False):
         # Force both threads to be inside the fetch at the same time.
         try:
             barrier.wait()
@@ -689,6 +689,73 @@ def test_a_failed_attempt_releases_its_claim_for_the_next_cycle(
     provider.fail_transactions.clear()
     tracker.note_activity(TRADER, "flaky", 400)
     assert names(queue) == ["flaky"]
+
+
+# -- a transaction the node cannot serve YET -------------------------------
+#
+# MEASURED, and it cost a whole session of trading: the push stream
+# reports a signature at CONFIRMED, about a second after its block, while
+# `getTransaction` defaulted to FINALIZED — some thirteen seconds later.
+# Every pushed trade therefore read back as null, reconstructed to
+# nothing, and was written to the processed ledger anyway. The live
+# tracker showed 6,238 clean polls, a 110 SOL buy and a 22.5 SOL sell
+# both marked handled, and `signals_emitted == 0`.
+
+
+def test_a_transaction_that_is_not_readable_yet_is_retried_not_dropped(
+        db, bus, config_store):
+    """Null from the node means "not yet", not "nothing here"."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.tick()
+
+    # The node has not caught up: the signature is real, the body is not
+    # there yet. Nothing is dispatched — and nothing is recorded either.
+    tracker.note_activity(TRADER, "fresh", 400)
+    assert queue.signals == []
+    assert "fresh" not in db.load_processed(TRADER)
+    assert tracker.status.unreadable == 1
+
+    # Moments later the node serves it, and the copy still happens.
+    swap_for(provider, "fresh")
+    tracker.note_activity(TRADER, "fresh", 400)
+    assert names(queue) == ["fresh"]
+
+
+def test_the_watermark_never_passes_an_unreadable_transaction(
+        db, bus, config_store):
+    """Advancing over a signature we could not READ retires it forever:
+    the ledger says handled, the cursor says behind us, and the trade is
+    gone. The sweep must stop at it instead."""
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.tick()
+
+    # s1 is readable, s2 is not yet. The walk runs oldest-first, so the
+    # cursor may reach s1 and must stop there.
+    provider.signatures[TRADER] = [sig_entry("s2", 300), sig_entry("s1", 200),
+                                   sig_entry("s0", 100)]
+    swap_for(provider, "s1")
+    sweep(tracker)
+
+    assert names(queue) == ["s1"]
+    assert db.load_watermarks()[TRADER] == (200, "s1")
+    assert "s2" not in db.load_processed(TRADER)
+
+    # Once the node serves s2, the next sweep picks it up — no gap.
+    swap_for(provider, "s2", buy=False)
+    sweep(tracker)
+    assert names(queue) == ["s1", "s2"]
+    assert db.load_watermarks()[TRADER] == (300, "s2")
+
+
+def test_transactions_are_requested_at_the_commitment_we_hear_about_them(
+        db, bus, config_store):
+    """The push path learns of a trade at `confirmed`; asking a
+    `finalized`-only question about it gets null for ~13 seconds, which
+    is the entire window in which a copy is worth making."""
+    from olala.chain.provider import TRANSACTION_OPTIONS
+    assert TRANSACTION_OPTIONS["commitment"] == "confirmed"
 
 
 def test_state_for_unfollowed_traders_is_dropped_from_memory(db, bus,
@@ -924,3 +991,179 @@ def test_a_reconnect_restarts_the_streams_responsibility(db, bus,
     connected["ok"] = False
     assert tracker._stream_is_proven() is False
     assert tracker._stream_trusted_since == 0.0     # responsibility ended
+
+
+# -- a wallet the tracking source cannot see at all ------------------------
+#
+# publicnode keeps only ~2 days of history (MEASURED). A followed wallet
+# whose newest trade is older than that returns ZERO signatures there —
+# indistinguishable, to one source, from a wallet that never traded. Left
+# unarmed the seat is dead: watermark slot 0 forever, every poll a clean
+# empty. It must be armed from a deeper source instead.
+
+class DeepArmProvider(FakeProvider):
+    """Primary sees nothing; only an escalated read finds the history."""
+
+    def __init__(self):
+        super().__init__()
+        self.deep_signatures = {}
+
+    def get_signatures(self, address, limit=100, before=None,
+                       failover_on_empty=False):
+        if failover_on_empty and not self.signatures.get(address):
+            self.signature_calls[address] = \
+                self.signature_calls.get(address, 0) + 1
+            return self.deep_signatures.get(address, [])[:limit]
+        return super().get_signatures(address, limit, before)
+
+
+def deep_world(db, bus, config_store):
+    provider = DeepArmProvider()
+    provider.router = FakeRouter(provider)
+    registry = TraderRegistry(db, bus)
+    registry.update(TraderProfile(address=TRADER,
+                                  status=TraderStatus.FOLLOWED,
+                                  assigned_wallet_id="w1"))
+    tracker = WalletTracker(config_store, provider, registry, db,
+                            RecordingQueue())
+    return provider, registry, tracker
+
+
+def test_a_wallet_invisible_on_the_primary_is_armed_from_a_deeper_source(
+        db, bus, config_store):
+    provider, registry, tracker = deep_world(db, bus, config_store)
+    provider.signatures[TRADER] = []                       # primary blind
+    provider.deep_signatures[TRADER] = [sig_entry("deep1", 500)]
+
+    tracker.tick()
+
+    # Armed at the newest entry a deeper source could see; history is not
+    # replayed as live trades (first-contact semantics).
+    assert db.load_watermarks()[TRADER] == (500, "deep1")
+    assert tracker.status.armed_from_deep == 1
+
+
+def test_a_genuinely_idle_wallet_is_not_armed_and_is_reprobed_cheaply(
+        db, bus, config_store):
+    """No history anywhere: stay unarmed, and do not re-probe every tick."""
+    provider, registry, tracker = deep_world(db, bus, config_store)
+    provider.signatures[TRADER] = []
+    provider.deep_signatures[TRADER] = []           # nothing, even deep
+
+    tracker.tick()
+    assert db.load_watermarks()[TRADER] == (0, "")
+    assert tracker.status.armed_from_deep == 0
+    reads = provider.signature_reads_for(TRADER)
+
+    # A second tick within the probe interval must NOT spend another read.
+    tracker.tick()
+    assert provider.signature_reads_for(TRADER) == reads
+
+
+def test_once_armed_from_deep_the_wallet_polls_normally(db, bus, config_store):
+    """After arming, a NEW trade lands within the primary's retention and
+    is copied through the ordinary path — the deep source is not needed
+    again."""
+    provider, registry, tracker = deep_world(db, bus, config_store)
+    provider.signatures[TRADER] = []
+    provider.deep_signatures[TRADER] = [sig_entry("deep1", 500)]
+    tracker.tick()
+    assert tracker.status.armed_from_deep == 1
+
+    # The wallet trades again; the primary sees it now.
+    provider.signatures[TRADER] = [sig_entry("s1", 600), sig_entry("deep1", 500)]
+    swap_for(provider, "s1")
+    sweep(tracker)
+    assert names(tracker._queue) == ["s1"]
+    assert db.load_watermarks()[TRADER] == (600, "s1")
+    assert tracker.status.armed_from_deep == 1          # not re-escalated
+
+
+# -- the copy path escalates a null transaction read -----------------------
+
+class NullFirstProvider(FakeProvider):
+    """A signature the primary cannot serve (null) but a deeper source can.
+    Readable only when asked with ``failover_on_null=True``."""
+
+    def __init__(self):
+        super().__init__()
+        self.deep_transactions = {}
+
+    def get_transaction(self, signature, failover_on_null=False):
+        if signature in self.fail_transactions:
+            from olala.chain.provider import ChainError
+            raise ChainError(f"scripted failure for {signature}")
+        if signature in self.deep_transactions:
+            return (self.deep_transactions[signature]
+                    if failover_on_null else None)
+        return self.transactions.get(signature)
+
+
+def test_the_copy_path_escalates_a_null_transaction_to_a_deeper_source(
+        db, bus, config_store):
+    provider = NullFirstProvider()
+    provider.router = FakeRouter(provider)
+    registry = TraderRegistry(db, bus)
+    registry.update(TraderProfile(address=TRADER,
+                                  status=TraderStatus.FOLLOWED,
+                                  assigned_wallet_id="w1"))
+    queue = RecordingQueue()
+    tracker = WalletTracker(config_store, provider, registry, db, queue)
+
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    tracker.tick()                                    # arm at s0
+
+    # s1 is null on the primary; only the escalated read serves the body.
+    provider.deep_transactions["s1"] = make_swap_tx(
+        TRADER, -2_000_005_000, MINT, 400.0)
+    provider.deep_transactions["s1"]["blockTime"] = time.time() - 1.0
+    provider.signatures[TRADER] = [sig_entry("s1", 200), sig_entry("s0", 100)]
+    sweep(tracker)
+
+    assert names(queue) == ["s1"]
+    assert db.load_watermarks()[TRADER] == (200, "s1")
+
+
+# -- batch gear budget headroom --------------------------------------------
+#
+# A 42-wallet batch needs 42 sub-calls, which at the source ceiling takes
+# roster/rate seconds just to ACCUMULATE — and the tracking source is
+# shared with discovery and health probes. Capping the reservation at the
+# bare poll interval refused every startup sweep (measured live: "publicnode
+# has no budget for 42 sub-calls within 5.0s" on every attempt).
+
+def test_batch_reserve_timeout_exceeds_the_bare_interval_for_a_big_roster(
+        db, bus, config_store):
+    provider, registry, queue, tracker = make_world(db, bus, config_store)
+    interval = tracker._derived_interval(42, "publicnode")     # the cadence
+    reserve = tracker._batch_reserve_timeout(42)               # the wait
+    assert reserve > interval
+    headroom = config_store.config.tracking.batch_reserve_headroom
+    assert reserve == pytest.approx(42 / 10.0 * headroom + 1.0, abs=0.01)
+
+
+def test_the_sweep_reserves_the_headroom_timeout_not_the_interval(
+        db, bus, config_store):
+    provider, registry, queue, tracker = make_world(
+        db, bus, config_store, followed=(TRADER, OTHER))
+
+    class TimingRouter(FakeRouter):
+        def __init__(self, provider):
+            super().__init__(provider)
+            self.timeouts = []
+
+        def batch(self, policy, items, timeout=None):
+            self.timeouts.append(timeout)
+            return super().batch(policy, items, timeout)
+
+    provider.router = TimingRouter(provider)
+    tracker._router = provider.router
+    provider.signatures[TRADER] = [sig_entry("s0", 100)]
+    provider.signatures[OTHER] = [sig_entry("t0", 100)]
+    sweep(tracker)
+
+    assert provider.router.timeouts
+    assert provider.router.timeouts[0] == pytest.approx(
+        tracker._batch_reserve_timeout(2), abs=0.01)
+    assert provider.router.timeouts[0] >= \
+        config_store.config.tracking.min_interval_sec
