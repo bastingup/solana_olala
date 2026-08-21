@@ -80,7 +80,8 @@ class RiskEngine:
                        exposure: WalletExposure,
                        is_resize: bool,
                        fill_probe: Callable[[str, float], float | None]
-                       | None = None) -> RiskVerdict:
+                       | None = None,
+                       performance_factor: float = 1.0) -> RiskVerdict:
         risk = config.risk
         if token.price_sol <= 0 or token.price_usd <= 0:
             return RiskVerdict(False, "no usable price for token")
@@ -117,8 +118,13 @@ class RiskEngine:
         else:
             available_sol = exposure.cash_sol - reserve_sol
 
-        # Size follows the TOKEN, not the wallet: see `target_size_sol`.
-        target_sol = target_size_sol(risk, token.market_cap_usd)
+        # Size follows the TOKEN (market-cap ladder), then is nudged up by
+        # how well this trader has performed FOR US — the best-ranked proven
+        # traders earn slightly bigger positions. The factor is >= 1.0
+        # (never a penalty); the liquidity, cash and per-position caps below
+        # still bound the result, so a bonus can never breach them.
+        target_sol = (target_size_sol(risk, token.market_cap_usd)
+                      * max(performance_factor, 0.0))
 
         # Per-position ceiling keeps one trade from dominating the
         # wallet, measured against what a normal entry in THIS token

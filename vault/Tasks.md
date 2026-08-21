@@ -134,6 +134,33 @@ freshness cost — a one-line config knob. The old 42-trader roster in the
 DB will re-score under the new gates and retire non-qualifiers over ~3
 sweeps; clearing the `traders` table gives an instant clean roster.
 
+## Done — performance-scaled sizing + 30% higher max exposure (2026-08-21)
+
+Operator: (1) size positions by RELATIVE trader performance too, not just
+market cap — the best traders in our own measured ranking deserve slightly
+bigger positions; (2) raise the maximum exposure — the max position size
+on opening a new position 30% bigger.
+
+- [x] **Performance size bonus.** `RiskEngine.evaluate_entry` takes a
+      `performance_factor` (default 1.0) that multiplies the market-cap
+      `target_sol`. `TradingEngine._performance_factor` computes it from
+      the SAME measured realized-PnL ranking that colours the moons:
+      `1.0 + perf_size_bonus_max * rank01`, where rank01 is the trader's
+      percentile among PROVEN traders (worst-proven and every unproven
+      trader get 1.0; a single/flat field sits mid-scale). New config
+      `risk.perf_size_bonus_max` = 0.25 (+25% for the single best). It is
+      >= 1.0 always (never a penalty) and the liquidity / cash / position
+      caps still bound the result — a bonus can't breach 1%-of-pool.
+- [x] **30% higher max.** `risk.max_trade_sol` 1.0 -> 1.3 in config.yaml.
+      That is the ceiling on a NEW position's size (the ladder top);
+      `max_position_equity_multiple` was NOT the knob — it only bounds
+      resize accumulation, not a new open. Ladder comment updated.
+- [x] Combined: biggest-mcap x best-trader = 1.3 x 1.25 = **1.625 SOL**
+      absolute max new position (still under all the safety caps).
+- [x] 4 new tests (factor scales up, neutral factor is a no-op, bonus
+      cannot breach the liquidity cap, measured rank drives the factor).
+      **481 tests green**, pyflakes clean.
+
 ## Done — measured performance: moon colour + live-wallet priority (2026-08-21)
 
 Operator feature: track ALL positions (never delete on close, just mark

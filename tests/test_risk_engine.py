@@ -196,3 +196,40 @@ def evaluate_with_probe(token, probe, config=None):
     return RiskEngine().evaluate_entry(
         config or AppConfig(), token,
         exposure(cash=7.0, equity=10.0), False, probe)
+
+
+# -- performance-scaled sizing ---------------------------------------------
+#
+# On top of the market-cap ladder, the traders that have performed best FOR
+# US earn a slightly bigger position. The engine takes the factor as an
+# argument (the trading engine computes it from measured realized PnL); the
+# liquidity, cash and per-position caps still bound the result.
+
+def test_a_performance_factor_scales_the_position_up():
+    config = AppConfig()
+    base = RiskEngine().evaluate_entry(
+        config, make_token(), exposure(), False)
+    boosted = RiskEngine().evaluate_entry(
+        config, make_token(), exposure(), False, performance_factor=1.25)
+    assert base.approved and boosted.approved
+    assert boosted.size_sol == pytest.approx(base.size_sol * 1.25, rel=1e-6)
+
+
+def test_a_neutral_factor_leaves_the_plain_market_cap_size():
+    config = AppConfig()
+    plain = RiskEngine().evaluate_entry(
+        config, make_token(), exposure(), False)
+    same = RiskEngine().evaluate_entry(
+        config, make_token(), exposure(), False, performance_factor=1.0)
+    assert same.size_sol == pytest.approx(plain.size_sol)
+
+
+def test_the_bonus_cannot_breach_the_liquidity_cap():
+    """A thin pool still bounds the boosted size — the bonus is not a
+    licence to exceed 1% of liquidity."""
+    from conftest import make_token as mk
+    thin = mk(liquidity_usd=20_000.0)      # 1% / sol_usd = ~1.0 SOL cap
+    huge_factor = RiskEngine().evaluate_entry(
+        AppConfig(), thin, exposure(), False, performance_factor=5.0)
+    # liquidity, not the 5x factor, decides the size.
+    assert huge_factor.size_sol <= 1.01

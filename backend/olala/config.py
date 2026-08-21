@@ -227,6 +227,12 @@ class RiskConfig:
     max_trade_sol: float = 1.0
     size_mcap_floor_usd: float = 10_000.0
     size_mcap_ceiling_usd: float = 1_000_000_000.0
+    # On top of the market-cap ladder, the size is nudged up for the
+    # traders that have performed best FOR US (the measured realized-PnL
+    # ranking that also colours the moons). This is the MAX extra fraction
+    # the single best-ranked proven trader earns; the worst-ranked proven
+    # and every unproven trader get none. 0 disables it.
+    perf_size_bonus_max: float = 0.25
     max_positions_per_wallet: int = 8
     atr_period: int = 14
     atr_stop_multiplier: float = 3.5

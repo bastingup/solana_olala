@@ -209,6 +209,13 @@ SETUP, across paper AND live and across every seat it ever held.
   field carry the map; the galaxy tints each PROVEN moon dark pink
   (weakest on the roster) → light pastel pink (strongest) by realized
   PnL, and leaves unproven moons the default nebula purple.
+- **Position SIZE** uses it too (2026-08-21): on top of the market-cap
+  ladder, `TradingEngine._performance_factor` nudges the size up for the
+  best-ranked proven traders — `1.0 + risk.perf_size_bonus_max · rank01`
+  (rank01 = percentile among proven; worst-proven and unproven get 1.0).
+  Passed to `RiskEngine.evaluate_entry(performance_factor=…)`, which
+  scales `target_sol`; the liquidity/cash/position caps still bound it.
+  `risk.max_trade_sol` was also raised 1.0 → 1.3 (max new-position size).
 
 **Paper fills model fees.** `PaperExecutor` charges `paper_fills.fee_sol`
 (≈ Solana base + priority) on BOTH the buy and the sell, plus spread and

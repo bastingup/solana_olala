@@ -90,6 +90,32 @@ class TradingEngine:
             return None
         return abs(float(quote.get("priceImpactPct") or 0.0)) * 100.0
 
+    def _performance_factor(self, trader: str) -> float:
+        """A size multiplier (>= 1.0) from this trader's measured rank.
+
+        The best-performing PROVEN traders in our own database — the same
+        realized-PnL ranking that colours the moons — earn a slightly
+        bigger position; the worst-ranked proven trader and every unproven
+        trader get the plain market-cap size. The bonus is RELATIVE to the
+        current field, so it re-scales as the roster's records change.
+        """
+        bonus = self._store.config.risk.perf_size_bonus_max
+        if bonus <= 0:
+            return 1.0
+        perf = self._portfolio.trader_performance()
+        proven = [m for m in perf.values() if m.proven]
+        mine = perf.get(trader)
+        if not proven or mine is None or not mine.proven:
+            return 1.0
+        low = min(m.realized_pnl_sol for m in proven)
+        high = max(m.realized_pnl_sol for m in proven)
+        # A single proven trader (or a flat field) sits mid-scale rather
+        # than claiming the full bonus it has not really out-earned anyone
+        # for.
+        rank01 = 0.5 if high <= low else (mine.realized_pnl_sol - low) / (
+            high - low)
+        return 1.0 + bonus * rank01
+
     def _blind_reason(self, trader: str) -> str:
         """Why this trader may not be ENTERED right now, if so."""
         if self._tracking_health is None:
@@ -158,8 +184,9 @@ class TradingEngine:
         is_resize = self._portfolio.find_open(
             wallet.id, signal.trader, signal.mint) is not None
         exposure = self._portfolio.exposure(wallet.id, signal.mint)
-        verdict = self._risk.evaluate_entry(config, token, exposure,
-                                            is_resize, self._fill_probe)
+        verdict = self._risk.evaluate_entry(
+            config, token, exposure, is_resize, self._fill_probe,
+            performance_factor=self._performance_factor(signal.trader))
         if not verdict.approved:
             self._reject(signal, wallet, verdict.reason)
             return

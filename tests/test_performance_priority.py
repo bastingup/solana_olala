@@ -207,3 +207,20 @@ def test_closing_a_position_republishes_performance_and_rebalances(ctx):
     payload = ctx._performance_payload()
     assert payload["traders"][A]["proven"] is True
     assert payload["traders"][A]["realized_pnl_sol"] == pytest.approx(1.2)
+
+
+# -- performance-scaled position sizing ------------------------------------
+
+def test_measured_rank_scales_the_position_size(ctx):
+    """The best-ranked proven trader earns the full size bonus; the
+    worst-ranked proven and every unproven trader get none."""
+    paper = paper_wallet(ctx)
+    follow(ctx, A, paper.id)
+    follow(ctx, B, paper.id)
+    prove(ctx, A, paper, pnl_each=+0.5)      # best proven
+    prove(ctx, B, paper, pnl_each=-0.1)      # worst proven
+    bonus = ctx.store.config.risk.perf_size_bonus_max
+
+    assert ctx.engine._performance_factor(A) == pytest.approx(1.0 + bonus)
+    assert ctx.engine._performance_factor(B) == pytest.approx(1.0)
+    assert ctx.engine._performance_factor(C) == pytest.approx(1.0)  # unproven
