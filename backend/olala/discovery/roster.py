@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class Roster:
     def __init__(self, registry: TraderRegistry,
-                 assign_wallet: Callable[[], str],
+                 assign_wallet: Callable[[str], str],
                  counters: dict[str, int], db: Any = None) -> None:
         self._registry = registry
         self._assign_wallet = assign_wallet
@@ -85,7 +85,7 @@ class Roster:
         profile.score = score
         if stats is not None:
             profile.stats = stats
-        profile.assigned_wallet_id = self._assign_wallet()
+        profile.assigned_wallet_id = self._assign_wallet(profile.address)
         if not profile.assigned_wallet_id:
             # No wallet to trade through: the seat would be occupied by a
             # trader that can never produce a fill. Say so loudly rather

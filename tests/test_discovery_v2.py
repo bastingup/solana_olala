@@ -56,7 +56,7 @@ def make_daemon(db, bus, config_store, provider=None, jupiter=None,
     registry = TraderRegistry(db, bus)
     daemon = TraderDiscoveryDaemon(
         config_store, provider, market or FakeMarketData(), registry, db,
-        bus, assign_wallet=lambda: "w1", jupiter=jupiter, tracker=tracker)
+        bus, assign_wallet=lambda *_a: "w1", jupiter=jupiter, tracker=tracker)
     return provider, registry, daemon
 
 

@@ -20,6 +20,11 @@ export class Store {
       wallets: new Map(),
       traders: new Map(),
       positions: new Map(),
+      // Our OWN measured track record per trader (address -> {realized_pnl_sol,
+      // closed_count, proven, ...}), refreshed after every close. Drives the
+      // dark-pink -> light-pastel-pink moon colouring and the live-wallet
+      // priority; empty until the first position closes.
+      measuredPerf: new Map(),
       tokens: new Map(),
       watchTokens: new Map(),
       scanProgress: new Map(),
@@ -75,6 +80,8 @@ export class Store {
     this.state.wallets = new Map(data.wallets.map((w) => [w.id, w]));
     this.state.traders = new Map(data.traders.map((t) => [t.address, t]));
     this.state.positions = new Map(data.positions.map((p) => [p.id, p]));
+    this.state.measuredPerf = new Map(
+      Object.entries((data.trader_performance || {}).traders || {}));
     this.state.receipts = data.receipts || [];
     this.state.watchTokens = new Map();
     this.state.feed = [];
@@ -84,6 +91,13 @@ export class Store {
         `for <b>${fill.sol_amount.toFixed(3)} ◎</b>`, fill.executed_at);
     }
     this._pushFeed("system", "Snapshot loaded — stream is live.");
+  }
+
+  _on_trader_performance(data) {
+    // The whole measured-performance map, republished after every close.
+    // Replacing it wholesale keeps the moon colours in lockstep with the
+    // backend's ranking rather than drifting on partial updates.
+    this.state.measuredPerf = new Map(Object.entries(data.traders || {}));
   }
 
   _on_portfolio_tick(data) {

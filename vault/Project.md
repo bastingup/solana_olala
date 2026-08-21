@@ -64,8 +64,9 @@ open the browser.
 `snapshot`, `portfolio_tick`, `wallet_added/update`, `position_opened/
 resized/closed`, `trader_candidate/admitted/rejected/retired`,
 `discovery_scan`, `copy_signal`, `risk_rejected`, `execution_error`,
-`trade_executed`, `receipt_recorded`, `config_changed`,
-`keystore_unlocked`, `ping`. Payloads are the domain objects' `to_dict()`
+`trade_executed`, `receipt_recorded`, `trader_performance`,
+`config_changed`, `keystore_unlocked`, `ping`. Payloads are the domain
+objects' `to_dict()`
 forms. The snapshot additionally carries `fills` and `receipts` (last 50
 each); `GET /api/receipts` lists the full receipt trail.
 
@@ -181,6 +182,38 @@ enforces this at signal intake AND at executor routing (defense in depth).
 `risk.max_live_wallets_per_token` (default 2) live wallets at once.
 Paper wallets and re-sizes are exempt; SOL is the base currency and is
 never a position, so it is inherently exempt.
+
+## Measured performance — the second hierarchy (2026-08-21)
+
+Closed positions are RETAINED forever (`apply_close` marks them
+`status=closed` with fee-inclusive `realized_pnl_sol`; nothing deletes
+them). `PortfolioManager` folds each close into a per-trader
+`TraderPerformance` aggregate (realized PnL, closed count, wins),
+rebuilt from the DB on restart — a trader's own track record IN OUR
+SETUP, across paper AND live and across every seat it ever held.
+
+- **First hierarchy** (roster membership): the leaderboard COMPOSITE
+  score (win × consistency × volume × activity) decides who holds a
+  seat; a stronger candidate evicts the weakest.
+- **Second hierarchy** (which seat): among followed traders, our own
+  measured realized PnL decides WHICH WALLET each trades through.
+  `AppContext._plan_assignment` orders wallets live-first and deals the
+  top PROVEN performers (`MIN_CLOSED_FOR_RANK` = 3 closes) into the
+  premium live seats; the unproven start on paper until they earn a
+  record. Re-evaluated after EVERY close (`portfolio.on_close`).
+- **Safe swaps only** (operator decision): `rebalance_assignments` only
+  moves a trader that is FLAT (no open position anywhere) — it never
+  liquidates real money to reshuffle. A trader holding a position keeps
+  its wallet until it closes out on its own, then gets repositioned.
+- **Moon colour** encodes it: `trader_performance` event + snapshot
+  field carry the map; the galaxy tints each PROVEN moon dark pink
+  (weakest on the roster) → light pastel pink (strongest) by realized
+  PnL, and leaves unproven moons the default nebula purple.
+
+**Paper fills model fees.** `PaperExecutor` charges `paper_fills.fee_sol`
+(≈ Solana base + priority) on BOTH the buy and the sell, plus spread and
+liquidity-derived impact — so measured realized PnL is genuinely
+fee-inclusive.
 
 ## Push-triggered copying
 

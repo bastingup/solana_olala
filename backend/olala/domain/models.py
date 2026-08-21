@@ -56,6 +56,53 @@ def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+#: Closed positions a trader must have produced for us before its measured
+#: performance is trusted enough to rank it (colour, live-wallet priority).
+#: Below this a trader is "unproven" — neutral, and kept off live wallets.
+MIN_CLOSED_FOR_RANK = 3
+
+
+@dataclass
+class TraderPerformance:
+    """How a trader has actually performed IN OUR SETUP.
+
+    This is the second layer of the performance hierarchy — not the
+    service's leaderboard numbers, but the realized, fee-inclusive PnL of
+    the positions WE copied from this trader and closed. Aggregated across
+    paper and live wallets alike, and across every seat the trader has ever
+    held, so a re-followed trader carries its own track record back.
+    """
+
+    address: str
+    realized_pnl_sol: float = 0.0
+    closed_count: int = 0
+    wins: int = 0
+
+    @property
+    def proven(self) -> bool:
+        return self.closed_count >= MIN_CLOSED_FOR_RANK
+
+    @property
+    def win_rate(self) -> float:
+        return self.wins / self.closed_count if self.closed_count else 0.0
+
+    def record(self, realized_pnl_sol: float) -> None:
+        self.realized_pnl_sol += realized_pnl_sol
+        self.closed_count += 1
+        if realized_pnl_sol > 0:
+            self.wins += 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "address": self.address,
+            "realized_pnl_sol": round(self.realized_pnl_sol, 6),
+            "closed_count": self.closed_count,
+            "wins": self.wins,
+            "win_rate": round(self.win_rate, 4),
+            "proven": self.proven,
+        }
+
+
 @dataclass
 class TokenInfo:
     """Market snapshot for a token, sourced from the market-data provider."""

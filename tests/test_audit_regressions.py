@@ -199,7 +199,7 @@ def test_scanner_budget_cut_does_not_skip_history(db, bus, config_store):
     registry.add_candidate(TRADER)
     daemon = TraderDiscoveryDaemon(
         config_store, provider, FakeMarketData(), registry, db, bus,
-        assign_wallet=lambda: "w1")
+        assign_wallet=lambda *_a: "w1")
 
     names = [f"h{i}" for i in range(10)]  # newest-first history
     provider.signatures[TRADER] = [entry(n) for n in names]

@@ -134,6 +134,87 @@ freshness cost — a one-line config knob. The old 42-trader roster in the
 DB will re-score under the new gates and retire non-qualifiers over ~3
 sweeps; clearing the `traders` table gives an instant clean roster.
 
+## Done — measured performance: moon colour + live-wallet priority (2026-08-21)
+
+Operator feature: track ALL positions (never delete on close, just mark
+sold) so we build an empirical per-trader track record IN OUR SETUP; use
+it to (a) colour trader moons dark pink → light pastel pink by measured
+performance, and (b) prioritise the top performers for LIVE wallets — a
+SECOND performance hierarchy on top of roster admission. Re-evaluated
+after every close. Operator decisions: **safe swaps only** (never
+liquidate to rebalance) and **total realized SOL PnL** as the metric.
+
+Two halves were already true and left as-is: closed positions are
+retained (`apply_close` marks `status=closed`, keeps the row), and paper
+fills already model network fees (`fee_sol` on both legs) so realized
+PnL is fee-inclusive.
+
+### Shipped
+
+- [x] `TraderPerformance` value object (`domain/models.py`) — realized
+      PnL, closed count, wins, `proven` at `MIN_CLOSED_FOR_RANK` (3).
+- [x] `PortfolioManager` keeps a running per-trader aggregate, rebuilt
+      from retained closed positions on restart; `trader_performance()`
+      accessor; `has_open_for_trader()` flatness check; an `on_close`
+      hook fired after every committed close.
+- [x] `AppContext._plan_assignment` — the second hierarchy. Wallets
+      ordered LIVE-first; followed traders ranked by measured PnL
+      (proven desc, then unproven); dealt into an even count-per-wallet
+      layout so the top proven performers fill the live seats and the
+      unproven start on paper. Deterministic (address tiebreak) so
+      equal traders never churn. `assign_wallet(address)` now uses it.
+- [x] `rebalance_assignments()` — after every close, moves FLAT
+      mis-assigned traders toward the plan; a trader holding a position
+      is left put (never liquidates). Wired via `portfolio.on_close`.
+- [x] `trader_performance` event + snapshot field carry the measured map
+      to the frontend after every close.
+- [x] Frontend: `Store` reducer + snapshot handling for the map; galaxy
+      tints each PROVEN moon dark pink (`#7a2450`, weakest on roster) →
+      light pastel pink (`#ffd3ec`, strongest) by realized PnL, unproven
+      stay nebula purple; moon tooltip shows "our PnL … over N closed".
+- [x] 10 new tests (`test_performance_priority.py`): aggregation,
+      proven threshold, restart persistence, on_close hook, flatness,
+      live-seat placement, unproven-stays-off-live, safe-swap (holding a
+      position blocks the move; flat unproven yields the seat),
+      after-close republish. **477 tests green**, pyflakes clean. Colour
+      gradient verified deterministically; layout unaffected (one-line
+      `.star-core` fill).
+
+### Post-ship fix — the moon-colour code broke the whole galaxy render
+
+Operator saw only ONE planet render with the roster of 120. Two frontend
+bugs in the colour code, both now fixed and verified with a standalone
+galaxy harness (explicit SVG size → 3 planets, 6 moons, gradient visible):
+
+- **`this` is undefined in `refreshNode`.** It is a MODULE function
+  invoked as `d3.select(this).call(refreshNode, d)`, i.e.
+  `fn.apply(null, ...)` — in a strict-mode ES module `this` is undefined,
+  so `this._perfMap`/`this._perfColor` THREW on the first moon, aborting
+  the `.each` before the simulation could settle. The colour is now
+  precomputed in `update()` (where `this` is the Galaxy) and stashed on
+  the node as `d.perfColor`/`d.perf`; `refreshNode` only reads plain
+  fields. **Trap: nothing in a d3 `.call(fn)` helper may touch instance
+  state via `this` — pass it through the datum.**
+- **A `fill` presentation attribute loses to a CSS class rule.**
+  `.star-core { fill: var(--nebula) }` overrode `.attr("fill", pink)`, so
+  even once it ran the moons stayed purple. Set per-node fill with
+  `.style("fill", …)` (inline style beats the class rule); `null` clears
+  it so unproven moons fall back to the CSS nebula.
+
+Verified live after restart: 30 traders carry a record, 9 proven, pink
+gradient spans −0.13 → +0.73 SOL. **The running app serves the OLD cached
+galaxy.js until the page is REFRESHED** — a WS reconnect does not reload
+JS modules.
+
+### Signable notes for next session
+
+- The `assign_wallet` callable contract changed to take an ADDRESS
+  (`Callable[[str], str]`) — roster/scanner + three test stubs updated.
+- With all-paper wallets the planner still clusters top performers on
+  one (paper) planet; harmless, and live wallets take precedence the
+  moment one exists. Fresh DB has no history yet, so all moons start
+  purple until positions close.
+
 ## Fixed — audited copy pipeline: 4 defects found and fixed (2026-08-20)
 
 **Outcome:** the copy path was never broken (it executed a copy mid-audit),

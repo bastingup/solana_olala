@@ -56,7 +56,7 @@ class TraderDiscoveryDaemon(Daemon):
     def __init__(self, store: ConfigStore, provider: RpcProvider,
                  market_data: MarketDataService, registry: TraderRegistry,
                  db: Database, bus: EventBus,
-                 assign_wallet: Callable[[], str],
+                 assign_wallet: Callable[[str], str],
                  jupiter=None, tracker=None) -> None:
         super().__init__("discovery",
                          store.config.discovery.scan_interval_sec)

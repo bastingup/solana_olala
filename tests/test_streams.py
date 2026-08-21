@@ -456,7 +456,7 @@ def test_seat_without_a_wallet_is_reported(tmp_path, db, bus, caplog):
     registry = TraderRegistry(db, bus)
     daemon = TraderDiscoveryDaemon(
         store, provider, FakeMarketData(), registry, db, bus,
-        assign_wallet=lambda: "",                 # no wallets exist
+        assign_wallet=lambda *_a: "",             # no wallets exist
         tracker=FakeTracker([nominee(0)]))
 
     with caplog.at_level(logging.WARNING):

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Callable
 
 from ..chain.provider import RpcProvider
 from ..config import ConfigStore
 from ..domain.models import (ExitReason, Fill, Position, PositionStatus,
-                             TokenInfo)
+                             TokenInfo, TraderPerformance)
 from ..domain.wallet import LiveSolanaWallet, PaperSolanaWallet, Wallet
 from ..events import EventBus
 from ..persistence.database import Database
@@ -32,6 +33,15 @@ class PortfolioManager:
         self._positions: dict[str, Position] = {}
         self._closing: set[str] = set()
         self._sol_price_usd: float = 0.0
+        # Per-trader realized track record from OUR closed positions — the
+        # measured second layer of the performance hierarchy. Kept as a
+        # running aggregate so it survives a restart and costs nothing to
+        # read after a close.
+        self._trader_perf: dict[str, TraderPerformance] = {}
+        # Invoked (outside the lock) after every committed close, so the
+        # composition root can republish performance and rebalance which
+        # traders sit on live wallets. Set by AppContext.
+        self.on_close: Callable[[Position], None] | None = None
         self._load()
 
     def _load(self) -> None:
@@ -46,6 +56,8 @@ class PortfolioManager:
             self._wallets[wallet.id] = wallet
         for position in self._db.load_positions():
             self._positions[position.id] = position
+            if position.status is PositionStatus.CLOSED:
+                self._record_performance(position)
 
         paper_config = self._store.config.paper
         existing_paper = sum(
@@ -121,6 +133,35 @@ class PortfolioManager:
     def all_positions(self) -> list[Position]:
         with self._lock:
             return list(self._positions.values())
+
+    def has_open_for_trader(self, trader: str) -> bool:
+        """Does this trader have ANY open position, on any wallet?
+
+        A trader that is flat can be moved between wallets for free — no
+        position to liquidate — which is the whole basis of the
+        safe-swap rebalance.
+        """
+        with self._lock:
+            return any(p.status is PositionStatus.OPEN and p.trader == trader
+                       for p in self._positions.values())
+
+    # -- measured performance (our own realized track record) --------------
+
+    def _record_performance(self, position: Position) -> None:
+        """Fold one closed position into its trader's running aggregate."""
+        perf = self._trader_perf.get(position.trader)
+        if perf is None:
+            perf = TraderPerformance(address=position.trader)
+            self._trader_perf[position.trader] = perf
+        perf.record(position.realized_pnl_sol)
+
+    def trader_performance(self) -> dict[str, TraderPerformance]:
+        with self._lock:
+            return {a: TraderPerformance(
+                        address=p.address,
+                        realized_pnl_sol=p.realized_pnl_sol,
+                        closed_count=p.closed_count, wins=p.wins)
+                    for a, p in self._trader_perf.items()}
 
     def find_open(self, wallet_id: str, trader: str,
                   mint: str) -> Position | None:
@@ -224,6 +265,10 @@ class PortfolioManager:
             position.exit_reason = reason.value
             position.realized_pnl_sol = fill.sol_amount - position.sol_invested
             position.last_price_sol = fill.price_sol
+            # The position is retained, never deleted — it becomes part of
+            # this trader's measured track record (realized PnL is already
+            # fee-inclusive: both sol_amount and sol_invested net fees).
+            self._record_performance(position)
             if isinstance(wallet, PaperSolanaWallet):
                 wallet.credit(fill.sol_amount)
                 self._db.upsert_wallet(wallet.id, wallet.label,
@@ -233,6 +278,11 @@ class PortfolioManager:
             self._db.save_fill(wallet.id, fill)
         self._bus.publish("position_closed", position.to_dict())
         self._publish_wallet(wallet)
+        # After every close: republish measured performance and let the
+        # composition root rebalance live-wallet priority. Outside the lock
+        # so the hook may touch the registry without deadlocking.
+        if self.on_close is not None:
+            self.on_close(position)
         return position
 
     def mark_price(self, mint: str, price_sol: float) -> list[Position]:

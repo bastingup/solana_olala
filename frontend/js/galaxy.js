@@ -17,6 +17,20 @@ const SATELLITE_ORBIT_BASE_R = 34;      // px around the moon
 const SATELLITE_ORBIT_GAP = 12;         // extra radius per extra satellite
 const TRAIL_SEGMENT_SWEEP = 0.5;        // rad per fading tail segment
 
+// Trader moons are tinted by their MEASURED performance in our setup —
+// the realized PnL of the positions we copied from them. Dark pink is the
+// weakest proven trader on the roster, light pastel pink the strongest.
+// Unproven traders (too few closed positions to judge) keep the default
+// nebula purple, so "measured" reads as distinctly different from "not yet".
+const PERF_DARK = "#7a2450";            // weakest proven performer
+const PERF_LIGHT = "#ffd3ec";           // strongest proven performer
+
+function lerpHex(a, b, t) {
+  const pick = (s, i) => parseInt(s.slice(1 + i * 2, 3 + i * 2), 16);
+  const c = [0, 1, 2].map((i) => Math.round(pick(a, i) + (pick(b, i) - pick(a, i)) * t));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
 export class Galaxy {
   constructor(svgElement, { onInspect, onHoverMint, onReassign }) {
     this._svg = d3.select(svgElement);
@@ -103,6 +117,15 @@ export class Galaxy {
     return { w: rect.width || 900, h: rect.height || 600 };
   }
 
+  _perfColor(pnl) {
+    // Map this trader's realized PnL onto the roster's proven range.
+    // A single proven trader (lo === hi) sits mid-gradient rather than
+    // pinning to an extreme it has not really earned.
+    const lo = this._perfLo, hi = this._perfHi;
+    const t = hi > lo ? (pnl - lo) / (hi - lo) : 0.5;
+    return lerpHex(PERF_DARK, PERF_LIGHT, Math.max(0, Math.min(1, t)));
+  }
+
   _drawStarfield() {
     const { w, h } = this._size();
     const random = d3.randomLcg(7);
@@ -126,6 +149,18 @@ export class Galaxy {
     const wallets = [...state.wallets.values()];
     const openPositions = [...state.positions.values()]
       .filter((p) => p.status === "open");
+
+    // Measured-performance colour range: min/max realized PnL across the
+    // PROVEN traders currently on the roster, so the pink gradient spans
+    // exactly today's field. Recomputed each update — it is cheap and the
+    // ranking shifts every time a position closes.
+    const perfMap = state.measuredPerf || new Map();
+    const provenPnls = followed
+      .map((t) => perfMap.get(t.address))
+      .filter((m) => m && m.proven)
+      .map((m) => m.realized_pnl_sol);
+    this._perfLo = provenPnls.length ? Math.min(...provenPnls) : 0;
+    this._perfHi = provenPnls.length ? Math.max(...provenPnls) : 0;
 
     const nodes = [];
     const links = [];
@@ -160,6 +195,13 @@ export class Galaxy {
       const index = moonCount.get(walletId) || 0;
       moonCount.set(walletId, index + 1);
       const angle = index * 2.4 - Math.PI / 2;
+      // Precompute the measured-performance colour HERE, where `this` is
+      // the Galaxy. refreshNode runs with `this` undefined (a module
+      // function invoked via d3 selection.call), so it must only read
+      // plain fields off the node — never reach back for instance state.
+      const perf = perfMap.get(trader.address) || null;
+      const perfColor = perf && perf.proven
+        ? this._perfColor(perf.realized_pnl_sol) : null;
       nodes.push(this._node({
         id: `t:${trader.address}`, type: "trader", data: trader,
         // Smaller moons (operator request): score still scales them.
@@ -168,6 +210,7 @@ export class Galaxy {
         ty: planet ? planet.ty + Math.sin(angle) * this._orbitR : h * 0.15,
         anchor: 0.12,
         orbit: walletId ? { walletId, base: angle } : null,
+        perfColor, perf,
       }));
       if (walletId && state.wallets.has(walletId)) {
         links.push({ source: `t:${trader.address}`, target: `w:${walletId}`,
@@ -537,6 +580,15 @@ function refreshNode(group, d) {
     const winRate = d.data.stats ? d.data.stats.win_rate : 0;
     group.select(".star-halo").attr("r", d.r + 5);
     group.select(".star-core").attr("r", d.r);
+    // Colour by MEASURED performance: proven traders carry a precomputed
+    // pink (dark = weakest, light = strongest); unproven have null and
+    // fall back to the CSS nebula. `d.perfColor`/`d.perf` are set in
+    // update() — refreshNode must not touch Galaxy instance state.
+    const perf = d.perf || null;
+    // Inline STYLE, not attr: `.star-core { fill: var(--nebula) }` is a CSS
+    // rule and would override a fill presentation attribute, leaving every
+    // moon purple. null clears the style so unproven moons fall back to it.
+    group.select(".star-core").style("fill", d.perfColor || null);
     group.select(".star-winrate")
       .attr("stroke-width", 2.5)
       .attr("d", d3.arc()({
@@ -544,9 +596,16 @@ function refreshNode(group, d) {
         startAngle: 0, endAngle: winRate * Math.PI * 2,
       }));
     group.select("text").attr("y", d.r + 18).text(shortAddr(d.data.address));
+    const measured = perf
+      ? (perf.proven
+          ? `\nour PnL ${perf.realized_pnl_sol >= 0 ? "+" : ""}` +
+            `${perf.realized_pnl_sol.toFixed(3)} ◎ over ${perf.closed_count} ` +
+            `closed (${fmtPct(perf.win_rate)} win)`
+          : `\nunproven — ${perf.closed_count} closed so far`)
+      : "\nunproven — no closed positions yet";
     group.select("title").text(
       `Trader ${d.data.address}\nwin rate ${fmtPct(winRate)} · score ` +
-      `${(d.data.score || 0).toFixed(2)}\nclick to inspect`);
+      `${(d.data.score || 0).toFixed(2)}${measured}\nclick to inspect`);
   } else if (d.type === "position") {
     const gain = (d.data.unrealized_pnl_sol || 0) >= 0;
     group.select(".pos-body")
