@@ -1,32 +1,32 @@
 # =====================================================================
-# OLALA — example configuration. Copy to `config.yaml` and edit.
+# OLALA — the one configuration file.
 #
-# `config.yaml` is READ ONLY to the running application: it is never
-# rewritten, so your comments survive. Changes made through the UI are
-# written to `config.runtime.yaml` and layered on top at startup; delete
-# that file to revert to what you wrote here.
+# This file is READ ONLY to the running application: it is never
+# rewritten, so these comments survive. Changes made through the UI at
+# runtime are written to `config.runtime.yaml` and layered on top of
+# this file at startup. Delete that file to revert to what is here.
 #
 # Anything omitted falls back to the built-in defaults in
 # `olala/config.py`, which are deliberately the STRICT ones.
 # =====================================================================
 
-# THE FILTER SWITCH — note the direction:
+# THE FILTER SWITCH — note the direction, it is the opposite of the
+# usual "dev mode means relaxed":
 #     true   -> APPLY every filter in `filters_onchain` (strict)
 #     false  -> IGNORE them: follow what on-chain discovery finds
-# Governs the ON-CHAIN stream only; the Solana Tracker stream is vetted
-# upstream. Live wallets always get the token safety screen regardless.
-dev_mode: true
+# It governs the ON-CHAIN stream only. The Solana Tracker stream is
+# vetted upstream and configured by `filters_solanatracker`, so this
+# flag never touches it. Live wallets always get the token safety
+# screen regardless of this setting. Read at BOOT ONLY.
+dev_mode: false
 
 server:
   host: 127.0.0.1
   port: 8420
 
 chain:
-  # Optional. Free tier at https://dashboard.helius.dev — used for the
-  # WebSocket stream, per-trade fetches and broadcasting. NOT used for
-  # the tracking heartbeat: it meters batch elements individually.
   helius_api_key: ''
-  # Optional. Free key: https://www.solanatracker.io/data-api
+  # Free key: https://www.solanatracker.io/data-api (10k requests/month).
   # Empty = discovery runs purely on-chain (winners' holders).
   solana_tracker_api_key: ''
   request_timeout_sec: 15.0
@@ -34,37 +34,51 @@ chain:
   slippage_bps: 100
 
 # ---------------------------------------------------------------------
-# RPC SOURCES. Every default here was MEASURED against the live
-# endpoint. `max_wallet_calls_per_sec` is load-bearing: public nodes
-# meter by SUB-CALL, so a batch of 50 addresses costs 50, and the
-# sustainable poll interval is (roster / this).
+# RPC SOURCES — every number here was MEASURED against the live endpoint,
+# not guessed. `max_wallet_calls_per_sec` is the load-bearing one: public
+# nodes meter by SUB-CALL, so a batch of 50 addresses costs 50, and the
+# sustainable polling interval is (roster / this).
 # ---------------------------------------------------------------------
 sources:
   publicnode:
     endpoints:
     - https://solana-rpc.publicnode.com
     ws_endpoint: wss://solana-rpc.publicnode.com
+    # MEASURED: 100 wallets answered in one 670 ms batch.
     supports_batch: true
     max_batch: 100
+    # MEASURED: 10.0/s ran 90s clean; 16.7/s throttled after ~40s.
     max_wallet_calls_per_sec: 10.0
+    metered: false
 
   helius:
     endpoints:
     - https://mainnet.helius-rpc.com/
     ws_endpoint: wss://mainnet.helius-rpc.com/
+    # MEASURED: a 10-element batch is served in 889 ms; 50 elements are
+    # REFUSED with HTTP 429 in 34 ms. It counts batch elements against
+    # the free tier's request budget, so it cannot carry the heartbeat.
     supports_batch: true
     max_batch: 10
     max_wallet_calls_per_sec: 8.0
     metered: true
     monthly_credit_cap: 1000000
+    # `enabled` is derived from chain.helius_api_key — one switch.
 
   mainnet_beta:
     endpoints:
     - https://api.mainnet-beta.solana.com
+    # MEASURED: batching returned per-element 429s on 42 of 50, responses
+    # arrived OUT OF ORDER, and a single call took 3.9s. Last resort.
     supports_batch: false
+    max_batch: 1
     max_wallet_calls_per_sec: 1.0
 
-# Ordered fall-through per policy, most preferred first.
+# Ordered fall-through per policy, most preferred first. Helius is
+# deliberately absent from `tracking`: it refuses roster-sized batches,
+# and a round-robin heartbeat there would cost ~2.6M credits/month
+# against a 1M allowance. Its jobs are the stream, per-trade fetches,
+# and broadcasting.
 routing:
   tracking:  [publicnode, mainnet_beta]
   history:   [publicnode, helius, mainnet_beta]
@@ -73,8 +87,19 @@ routing:
   confirm:   [helius, publicnode]
   stream:    [helius, publicnode]
 
+# ---------------------------------------------------------------------
+# TRACKING — how followed wallets are watched. Detection is the
+# WebSocket's job; this governs the reconciliation sweep that proves
+# nothing was missed.
+# ---------------------------------------------------------------------
 tracking:
+  # Floor for the BATCH gear. The interval actually used is DERIVED from
+  # roster size against the source ceiling above, so adding wallets
+  # widens the cadence instead of silently throttling.
   min_interval_sec: 5.0
+  # ROUND_ROBIN gear: one wallet per tick, ~1 call/s whatever the roster
+  # size — ten times cheaper than batching, and the gear used whenever
+  # the stream has proven itself live.
   tick_sec: 1.0
   signatures_per_poll: 30
   # Lookback when catching up, and when polling a single wallet.
@@ -84,77 +109,218 @@ tracking:
   # permanently blind.
   catchup_signatures: 1000
   max_transactions_per_cycle: 60
+  # Headroom for the BATCH gear's budget reservation. A batch of N
+  # wallets needs N sub-calls, which at the source ceiling takes
+  # N / rate seconds just to ACCUMULATE — and the tracking source is
+  # shared with discovery, health probes and copy fetches, so the batch
+  # rarely has the full rate to itself. This multiplies the wait so the
+  # reservation succeeds under that contention instead of being refused
+  # (a 42-wallet startup sweep was failing every attempt at the bare
+  # interval). It widens only how long the reservation may WAIT; it never
+  # raises the issue rate.
+  batch_reserve_headroom: 2.5
+  # A signal older than this may not OPEN a position: after an outage the
+  # backlog would otherwise buy into trades the trader already exited.
+  # Exits are never blocked by age.
   max_signal_age_sec: 90.0
   price_mark_interval_sec: 20
+  # logsSubscribe dies SILENTLY on public RPC — but a quiet market is
+  # silent too, so silence proves nothing either way. The stream is
+  # judged by what it MISSES: if the sweep finds a trade older than this
+  # that the stream never reported, tracking switches to the batch gear
+  # until the stream delivers again.
   stream_miss_grace_sec: 20.0
 
+# ---------------------------------------------------------------------
+# RISK EXPOSURE — how much money any single trade may touch.
+# ---------------------------------------------------------------------
 risk:
+  # Our capital never exceeds this share of a pool's liquidity.
   max_liquidity_fraction: 0.01
+  # Share of equity held back so re-sizes can follow a trader into dips.
   reserve_fraction: 0.3
-  # Order size scales with token market cap (log-spaced) rather than
-  # being a flat share of equity, so small pools get small orders
-  # instead of being excluded.
+  # ---- ORDER SIZE: scaled by the TOKEN, not by the wallet ----
+  # One number cannot serve a $2k pump.fun launch and a $1B major: it is
+  # dust in one and a market-moving order in the other. Small tokens get
+  # the floor, big ones the ceiling, and everything between is
+  # interpolated LOGARITHMICALLY (market cap spans six orders of
+  # magnitude, so a linear ramp would park everything under $100M on the
+  # floor). This is why no filter is needed to decide trade size — the
+  # size adapts instead of the universe shrinking.
+  #
+  #        $10k mcap -> 0.013 SOL        $10M mcap -> 0.785 SOL
+  #       $100k mcap -> 0.270 SOL       $100M mcap -> 1.043 SOL
+  #         $1M mcap -> 0.528 SOL         $1B mcap -> 1.300 SOL
+  #
+  # The liquidity ceiling, cash reserve and per-position cap still apply
+  # on top and may cut any of these down.
   min_trade_sol: 0.01
-  max_trade_sol: 1.0
+  # MAX position size on opening a new position, raised 30% (1.0 -> 1.3)
+  # for higher maximum exposure (operator, 2026-08-21). The liquidity and
+  # cash caps still bound thin tokens; this only lifts the ceiling for the
+  # deep ones that can absorb it.
+  max_trade_sol: 1.3
   size_mcap_floor_usd: 10000.0
   size_mcap_ceiling_usd: 1000000000.0
-  max_positions_per_wallet: 8
-  atr_period: 14
+  # Performance sizing: the best-ranked PROVEN traders in our own measured
+  # database earn up to this much extra size on top of the market-cap
+  # ladder (0.25 = +25% for the single best; worst-proven and unproven get
+  # none). This is the same realized-PnL ranking that colours the moons.
+  perf_size_bonus_max: 0.25
+  max_positions_per_wallet: 100
+  # ATR panic stop: period in 1-minute candles, trail multiplier.
+  atr_period: 48
   atr_stop_multiplier: 3.5
+  # Token safety: top-10 holder concentration ceiling (LP vaults count,
+  # so values below ~0.3 reject almost every real token).
   max_token_top10_holder_fraction: 0.5
-  min_pair_age_days: 14.0
+  # A token may be held by at most this many LIVE wallets at once.
   max_live_wallets_per_token: 2
+  # An order smaller than this is not worth its fees. Must sit at or
+  # below min_trade_sol, or the smallest tokens are refused outright.
   min_order_sol: 0.01
+  # Hard ceiling on one position, as a multiple of the per-trade share.
   max_position_equity_multiple: 2.0
 
+# How simulated fills are priced. These decide whether paper results
+# mean anything, so they are configuration rather than literals.
 paper_fills:
   fee_sol: 0.000105
   base_spread: 0.001
   max_modeled_impact: 0.05
 
-# Applied only when dev_mode: true.
+# STREAM B FILTERS — applied only when dev_mode: true.
 filters_onchain:
-  min_history_days: 90
-  min_trades: 200
-  min_round_trips: 20
-  # FRACTION, not percent: 0.6 = 60%.
-  min_win_rate: 0.6
-  min_sharpe: 0.1
-  stale_bag_days: 7.0
-  max_inactive_hours: 24
+  # A real track record, not a hot streak.
+  min_history_days: 30
+  min_trades: 20
+  min_round_trips: 10
+  # BAG-ADJUSTED win rate: every unsold bag older than stale_bag_days
+  # counts as a realized loss, so the "never sell the losers" wallet
+  # collapses here.
+  min_win_rate: 0.8
+  min_sharpe: 0.0
+  stale_bag_days: 10.0
+  # A swing trader may reasonably be quiet over a long weekend.
+  max_inactive_hours: 96
+  # Human cadence only: anything faster is a bot or uncopyable.
   max_trades_per_day: 40.0
+  # Positions must be held long enough that copy latency is noise.
   min_median_hold_minutes: 30.0
-  min_token_market_cap_usd: 20000000.0
-  min_token_liquidity_usd: 500000.0
-  max_token_market_cap_usd: 5000000000.0
+  min_token_market_cap_usd: 500000.0
+  min_token_liquidity_usd: 50000.0
+  max_token_market_cap_usd: 50000000000.0
 
+# STREAM A — the service ranks and vets; we take what it returns.
+# `filters_onchain` above governs the on-chain stream, not this one.
 filters_solanatracker:
-  sort: roi
+  sort: realized
   window_days: 30
   min_active_days: 10
   min_trades: 20
-  min_roi_pct: 0.0
-  # FRACTION, not percent: 0.55 = 55%.
-  min_win_rate: 0.0
-  pages: 3
+  min_roi_pct: 50.0
+  # FRACTION, not percent: 0.55 = 55%. MEASURED: this filter is the one
+  # that sets the population — 70% leaves 1,029 wallets, 55% leaves
+  # 1,407, and removing it entirely admits ~12,500 whose numbers cannot
+  # be verified (see require_closed_trades). Raised to 0.60 for the
+  # clean-first roster (2026-08-20).
+  min_win_rate: 0.60
+  # UPPER cap on win rate (FRACTION, 1.0 = off). A win rate near 100% is
+  # the "never realise a loser" tell — the losers just sit unsold. MEASURED
+  # 2026-08-20: the board's p90 win rate is 100%, almost all of it this
+  # pattern. Cap at 0.97 to keep genuine top-tier records and drop the
+  # too-perfect ones.
+  max_win_rate: 0.97
+  # How wide we look. MEASURED: the service serves 500 per request and
+  # caps there, and the whole qualified population came back in 3
+  # requests — so this covers the board rather than skimming its top.
+  page_size: 500
+  pages: 6
+  limit: 500
   interval_sec: 3600
-  # The speed past which a trader cannot be copied at our latency.
-  # Measured: 400 keeps 94 of 100 qualified wallets; 40 kept only 38.
-  max_trades_per_day: 400.0
 
+  # ---- TRADABILITY (not quality) ----
+  # Whether we can actually fill alongside this trader.
+  #
+  # The board carries each trader's average BUY in dollars — the closest
+  # free proxy for the depth of the pools they work in. `risk` never
+  # lets us take more than max_liquidity_fraction (1%) of a pool, so an
+  # order of $X needs a pool holding X/0.01. A wallet averaging $14 a
+  # buy (the 10th percentile of this board) trades where our order
+  # cannot be filled at all — which is exactly what happened: two real
+  # buys were refused because the pool held $0.
+  # VOLUME-TUNED 2026-08-20: lowered 150 -> 75 to fill the roster. At 150
+  # only ~39 wallets qualified (39 of 60 seats); the avg-buy floor was the
+  # single biggest population limiter (board p50 is $45). $75 still keeps
+  # real-capital traders out of pure dust while roughly doubling the pool.
+  # Thin tokens are handled by the market-cap-scaled order size + the risk
+  # engine's liquidity/impact gates, not by refusing the trader outright.
+  min_avg_buy_usd: 75.0
+
+  # THE quality filter. A wallet that makes its money on low-cap trash
+  # or by rugging itself cannot deploy real capital — those pools will
+  # not take it. So 30-day volume at a HUMAN trade count mechanically
+  # implies decent-sized positions, which implies decent-sized tokens.
+  # VOLUME-TUNED 2026-08-20: 5000 -> 2000 to fill the 60-seat roster
+  # (at 5000 the pool was ~39; at 2000 it is ~108). Still excludes the
+  # sub-$2k-turnover wallets that only ever touch dust.
+  min_volume_usd: 2000.0
+
+  # MEASURED: every wallet the service reports with a 0% win rate has
+  # ZERO closed round trips — it is missing data, not a losing trader,
+  # and their realized PnL is incoherent ($2.3M booked on $71 invested).
+  # Requiring a completed round trip is what makes the rest trustworthy.
+  require_closed_trades: true
+  # RECENCY. MEASURED 2026-08-20: the board's 30-day trades/day lags
+  # CURRENT behaviour, so recency is what keeps the roster trading. Set
+  # to 96h (operator, volume-tuning): recency alone barely moved the pool
+  # (31 at 48h -> 41 at 168h) because the size gates bound it, but 96h
+  # widens the base the other loosenings draw from.
+  max_last_trade_hours: 96.0      # 4 days
+  # ---- CLEAN-ACTIVE SELECTION (measured 2026-08-20) ----
+  # These separate a real, active trader from a bot, a sniper, or a
+  # honeypot. VOLUME-TUNED to fill the 60-seat roster while keeping the
+  # anti-junk character (the tokens/day, win-rate cap and consistency
+  # gates are what stop snipers and never-sell-losers; those stay tight).
+  #
+  # Activity FLOOR: under ~4 trades/day is too slow to earn a seat.
+  min_trades_per_day: 4.0
+  # Anti-bot CEILING. 60 -> 120: a genuine momentum trader can run hotter
+  # than 60/day, and the composite score + tokens/day cap keep the actual
+  # MEV machines (1,000s/day) out. More headroom = more copyable buys.
+  max_trades_per_day: 120.0
+  # Anti-sniper: a snipe-and-dump wallet churns many DISTINCT tokens a
+  # day; a real trader concentrates. Kept TIGHT — this is a core purity
+  # gate. MEASURED p50 3.7, p90 14.2 tok/day; 10 keeps clean traders.
+  max_tokens_per_day: 10.0
+  # Anti-honeypot / anti-luck: fraction of the window's trading days that
+  # were green. Kept as a real gate; 0.40 gives the 120-seat roster pool
+  # headroom without admitting one-lucky-day wallets (a real edge is
+  # green on clearly more days than not).
+  min_profitable_days_ratio: 0.40
+
+# STREAM B — our own on-chain discovery, gated by `filters_onchain`.
 discovery:
-  scan_interval_sec: 180
-  max_followed_traders: 10
-  max_candidates_per_scan: 120
+  scan_interval_sec: 300
+  rpc_calls_per_scan: 75
+  # Winners' holders earns its keep here: it finds patient token-pickers.
+  winners_per_scan: 4
+  max_candidates_per_scan: 10000
+  # Roster size is the lever on fleet-wide copy volume. MEASURED
+  # 2026-08-20: the board's trades/day overstates copyable on-chain buys
+  # ~30-60x, so a clean 60-seat roster yields only ~12-30 copies/day. The
+  # honest clean ceiling is to seat the WHOLE qualified clean pool
+  # (~120-150 wallets on the board); 80/day of clean copies is not
+  # reachable — that rate only exists among snipers/momentum bots, which
+  # the tokens/day and win-rate gates deliberately exclude. Grown 60 ->
+  # 120 to seat the full clean pool for ~35-50 quality copies/day.
+  # Tracking cost is unchanged: round-robin is ~1 call/s regardless of
+  # roster size (120s full coverage pass; the push stream is the real
+  # detector), and the derived batch interval is 120/10 = 12s.
+  max_followed_traders: 120
   signatures_per_trader: 3000
-  rpc_calls_per_scan: 200
-  skill_window_days: 90
+  skill_window_days: 50
   replace_margin: 0.02
-  winner_min_price_change_pct: 30.0
-  winner_min_liquidity_usd: 150000.0
-  winners_per_scan: 3
-  winner_top_holders: 20
-  winner_max_holder_share: 0.1
 
 paper:
   wallet_count: 3
