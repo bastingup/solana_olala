@@ -97,7 +97,9 @@ class FakeTracker:
                     min_roi_pct=0.0, min_win_rate=0.0,
                     page_size=500, min_avg_buy_usd=0.0,
                     max_last_trade_age_sec=0.0, min_volume_usd=0.0,
-                    require_closed_trades=False):
+                    require_closed_trades=False,
+                    min_trades_per_day=0.0, max_tokens_per_day=0.0,
+                    max_win_rate=1.0, min_profitable_days_ratio=0.0):
         self.calls += 1
         self.last_params = {
             "limit": limit, "page_size": page_size, "max_pages": max_pages,
@@ -115,7 +117,9 @@ class FakeTracker:
         kept = [t for t in self.traders
                 if _tradable(t, max_trades_per_day, min_avg_buy_usd,
                              max_last_trade_age_sec, now, min_volume_usd,
-                             require_closed_trades)]
+                             require_closed_trades, min_trades_per_day,
+                             max_tokens_per_day, max_win_rate,
+                             min_profitable_days_ratio)]
         return kept[:limit]
 
 

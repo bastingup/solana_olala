@@ -25,6 +25,7 @@ produce.
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from ..constants import SECONDS_PER_DAY
@@ -41,6 +42,16 @@ SOURCE_NAME = "Solana Tracker PnL leaderboard"
 # losing its seat. One absence is as likely to be a service hiccup as a
 # real change; acting on it would churn the roster on every bad minute.
 ABSENCES_BEFORE_RETIREMENT = 3
+
+
+#: Trades/day that maxes out the activity term of the composite score.
+#: A wallet at or above this is "as active as we reward"; the cap stops
+#: speed from out-voting the quality terms.
+ACTIVITY_REF_TPD = 40.0
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 class LeaderboardSource:
@@ -104,7 +115,11 @@ class LeaderboardSource:
             min_avg_buy_usd=board.min_avg_buy_usd,
             max_last_trade_age_sec=board.max_last_trade_hours * 3600.0,
             min_volume_usd=board.min_volume_usd,
-            require_closed_trades=board.require_closed_trades)
+            require_closed_trades=board.require_closed_trades,
+            min_trades_per_day=board.min_trades_per_day,
+            max_tokens_per_day=board.max_tokens_per_day,
+            max_win_rate=board.max_win_rate,
+            min_profitable_days_ratio=board.min_profitable_days_ratio)
 
         total = len(entries)
 
@@ -259,16 +274,55 @@ class LeaderboardSource:
 
     @staticmethod
     def _score(entry: dict, position: int, total: int) -> float:
-        """Rank the service handed us, normalised to 0..1.
+        """A COMPOSITE skill score in 0..1 — win rate, consistency, size.
 
-        Board POSITION is the score, not win rate: position reflects
-        whatever ranking the operator configured (ROI by default), while
-        win rate is a single distorted field — a wallet that never sells
-        its losers reports ~100%.
+        Board position alone rewarded whatever single field the sort used
+        (absolute PnL rewards SCALE, i.e. the biggest machines). Once the
+        clean-active gates have removed bots, snipers and rugs, the seats
+        should go to the best of what remains, judged on three payload
+        signals at once:
+
+        * **win rate** — accuracy, but its top end is capped by the gate,
+          so a never-sell-losers 100% cannot dominate here either;
+        * **consistency** — the fraction of trading days that were green,
+          which a single lucky pump cannot fake;
+        * **size** — capital actually deployed (log-scaled, six orders of
+          magnitude), so a real book outranks a tiny one;
+        * **activity** — trades/day, normalised. When the qualified pool
+          is larger than the roster, this is what makes the seated traders
+          the more ACTIVE of the clean set — the copy-volume lever the
+          operator is tuning. It is weighted below the quality terms and
+          the tokens/day gate still bars snipers, so a fast wallet cannot
+          buy a seat on speed alone.
+
+        Board position is folded in only as a hair-thin tie-breaker, so
+        ordering stays stable when the composite ties.
         """
-        if total <= 0:
-            return 0.0
-        return round((total - position) / total, 4)
+        win = entry.get("win_rate") or 0.0
+        trading_days = entry.get("trading_days") or 0
+        profitable_days = entry.get("profitable_days") or 0
+        invested = entry.get("volume_usd") or 0.0
+        trades_per_day = entry.get("trades_per_day") or 0.0
+
+        # Win: 0.50 -> 0, 0.97 -> 1 (the plausible top of a real record).
+        win_component = _clamp((win - 0.50) / 0.47, 0.0, 1.0)
+        consistency = (profitable_days / trading_days
+                       if trading_days else 0.0)
+        # Size: $1 -> 0, $1,000,000 deployed -> 1.
+        volume_component = _clamp(math.log10(max(invested, 1.0)) / 6.0,
+                                  0.0, 1.0)
+        # Activity: 0 -> 0, ACTIVITY_REF trades/day -> 1 (capped, so a
+        # hotter wallet does not out-score a clean one on speed).
+        activity_component = _clamp(trades_per_day / ACTIVITY_REF_TPD,
+                                    0.0, 1.0)
+
+        score = (0.35 * win_component
+                 + 0.22 * _clamp(consistency, 0.0, 1.0)
+                 + 0.18 * volume_component
+                 + 0.25 * activity_component)
+        if total > 0:
+            score += 0.0001 * ((total - position) / total)   # tie-break
+        return round(_clamp(score, 0.0, 1.0), 4)
 
     def _stats(self, entry: dict) -> TraderStats:
         """Shape the service's numbers into TraderStats for display.

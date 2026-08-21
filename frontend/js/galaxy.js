@@ -134,8 +134,10 @@ export class Galaxy {
     const planetAnchor = new Map();
     wallets.forEach((wallet, index) => {
       const spread = (index + 1) / (wallets.length + 1);
-      const tx = w * (0.18 + spread * 0.64);
-      const ty = h * (index % 2 === 0 ? 0.42 : 0.56);
+      // Wider horizontal span and a touch more vertical stagger so the
+      // planets sit farther apart (operator request).
+      const tx = w * (0.12 + spread * 0.76);
+      const ty = h * (index % 2 === 0 ? 0.40 : 0.60);
       planetAnchor.set(wallet.id, { tx, ty });
       const planet = this._node({
         id: `w:${wallet.id}`, type: "wallet", data: wallet,
@@ -160,7 +162,8 @@ export class Galaxy {
       const angle = index * 2.4 - Math.PI / 2;
       nodes.push(this._node({
         id: `t:${trader.address}`, type: "trader", data: trader,
-        r: 6 + (trader.score || 0) * 6,
+        // Smaller moons (operator request): score still scales them.
+        r: 4 + (trader.score || 0) * 4.5,
         tx: planet ? planet.tx + Math.cos(angle) * this._orbitR : w * 0.5,
         ty: planet ? planet.ty + Math.sin(angle) * this._orbitR : h * 0.15,
         anchor: 0.12,
@@ -214,7 +217,7 @@ export class Galaxy {
         id: `p:${position.id}`, type: "position", data: position,
         // Fixed size: value lives in the inspector, not the geometry
         // (operator decision — sized satellites read as other objects).
-        r: 7,
+        r: 5.5,
         orbitCenter: centerId, orbitBase: base, orbitDist: dist,
         tx: (center ? (center.fx ?? center.tx) : w * 0.5)
           + Math.cos(base) * dist,

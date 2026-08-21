@@ -295,6 +295,11 @@ class SolanaTrackerFilters:
     # units across two win-rate settings once let 0.7 mean 0.7% instead
     # of 70%, which admitted traders winning one trade in five.
     min_win_rate: float = 0.0
+    # UPPER bound on win rate, also a FRACTION (1.0 = off). A wallet that
+    # never realises its losers reports a win rate near 100%, so an
+    # implausibly perfect record is a tell, not a triumph. The API offers
+    # only a minimum, so this cap is applied client-side from the payload.
+    max_win_rate: float = 1.0
     # Wallets per request. MEASURED: the service serves up to 500 and
     # caps there, so asking for 100 spent five times the requests for
     # the same names against a 10k/month allowance.
@@ -324,16 +329,33 @@ class SolanaTrackerFilters:
     # rate of 0 had closed == 0, and their realized PnL is incoherent
     # ($2.3M realized on $71 invested). Unverifiable is worse than bad.
     require_closed_trades: bool = True
-    # A 30-day PnL ranking happily returns wallets that stopped trading
-    # a week ago. A dormant trader occupies a seat and copies nothing.
+    # A PnL ranking happily returns wallets that stopped trading days ago.
+    # A dormant trader occupies a seat and copies nothing. MEASURED
+    # 2026-08-20: a 30-day board metric badly lags CURRENT behaviour — a
+    # wallet the board reported at 21 trades/day had done ~0.5 copyable
+    # buys/day over its last eight days — so recency, not the 30-day
+    # average, is what keeps the roster actually trading.
     max_last_trade_hours: float = 168.0
     interval_sec: int = 3600
     # NOT a quality judgment — a mechanical limit: the speed past which
     # we can neither copy a trader nor afford the RPC to try. 0 disables
-    # the cap. MEASURED against the live board: a cap of 40 discarded 62
-    # of 100 qualified wallets, including 97%-win traders active minutes
-    # earlier, for no gain in median win rate.
+    # the cap.
     max_trades_per_day: float = 400.0
+    # ---- CLEAN-ACTIVE SELECTION (all client-side, from payload data) ----
+    # These separate a real, active, top-tier trader from a bot, a sniper,
+    # or a honeypot. 0 disables any one of them. MEASURED against the live
+    # board 2026-08-20; see the vault.
+    #
+    # Activity FLOOR: a wallet doing under this many trades/day is too slow
+    # to be worth a seat, however good its record.
+    min_trades_per_day: float = 0.0
+    # Anti-sniper: a snipe-and-dump wallet churns many DISTINCT tokens per
+    # day, while a real trader concentrates. `tokensTraded / tradingDays`.
+    max_tokens_per_day: float = 0.0
+    # Anti-honeypot / anti-luck: fraction of the window's trading days that
+    # were profitable. A rug or a single lucky pump shows one huge day; a
+    # real edge shows CONSISTENT green days. `days.profitable / tradingDays`.
+    min_profitable_days_ratio: float = 0.0
 
 
 @dataclass
@@ -553,12 +575,19 @@ def _validate(config: AppConfig) -> None:
             f"{VALID_LEADERBOARD_SORTS}, got {board.sort!r}")
     for label, value in (("filters_solanatracker.min_win_rate",
                           board.min_win_rate),
+                         ("filters_solanatracker.max_win_rate",
+                          board.max_win_rate),
                          ("filters_onchain.min_win_rate",
                           config.filters_onchain.min_win_rate)):
         if not 0.0 <= value <= 1.0:
             raise ValueError(
                 f"{label} is a FRACTION between 0 and 1 (0.55 = 55%), "
                 f"got {value!r} — did you mean {value / 100:g}?")
+    if board.max_win_rate < board.min_win_rate:
+        raise ValueError(
+            f"filters_solanatracker.max_win_rate ({board.max_win_rate}) is "
+            f"below min_win_rate ({board.min_win_rate}) — no wallet could "
+            f"ever qualify")
     if 0.0 < board.min_roi_pct < 1.0:
         # 0.5 here means half a percent, which filters nothing; nobody
         # sets that on purpose.

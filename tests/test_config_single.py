@@ -195,3 +195,26 @@ def test_public_config_redacts_every_credential_shaped_key():
     assert payload["chain"]["request_timeout_sec"] == 15
     assert payload["sources"]["helius"]["max_batch"] == 10
     assert payload["future_section"]["keep"] == 1
+
+
+def test_redaction_matches_secret_words_not_bare_substrings():
+    """`token` is a secret WORD, not a substring: matching it as a raw
+    substring dropped `max_tokens_per_day` from the snapshot because
+    "token" sits inside it — hiding a real config field from the UI."""
+    from olala.api.server import _redact_secrets
+
+    payload = _redact_secrets({
+        "filters_solanatracker": {
+            "max_tokens_per_day": 8.0,
+            "min_trades_per_day": 4.0,
+            "tokens_traded": 3,
+        },
+        "auth": {"auth_token": "SECRET", "session": "keep"},
+    })
+    # Real config fields that merely CONTAIN "token" survive.
+    assert payload["filters_solanatracker"]["max_tokens_per_day"] == 8.0
+    assert payload["filters_solanatracker"]["min_trades_per_day"] == 4.0
+    assert payload["filters_solanatracker"]["tokens_traded"] == 3
+    # A field that IS a token is still redacted.
+    assert "auth_token" not in payload["auth"]
+    assert payload["auth"]["session"] == "keep"

@@ -38,21 +38,50 @@ MAX_PAGE_SIZE = 500
 def _tradable(entry: dict[str, Any], max_trades_per_day: float | None,
               min_avg_buy_usd: float, max_last_trade_age_sec: float,
               now: float, min_volume_usd: float = 0.0,
-              require_closed_trades: bool = False) -> bool:
-    """Can we actually copy this wallet, at our size and our latency?
+              require_closed_trades: bool = False,
+              min_trades_per_day: float = 0.0,
+              max_tokens_per_day: float = 0.0,
+              max_win_rate: float = 1.0,
+              min_profitable_days_ratio: float = 0.0) -> bool:
+    """Is this a real, active, copyable trader — not a bot, sniper or rug?
 
-    Purely payload data — no extra request, no RPC.
+    Purely payload data — no extra request, no RPC. Every gate is a
+    MEASURED discriminator (see the vault); 0 / 1.0 disables one.
     """
     rate = entry["trades_per_day"]
     if (max_trades_per_day is not None and rate is not None
             and rate > max_trades_per_day):
         return False
+    if min_trades_per_day > 0:
+        # Activity FLOOR: too slow to be worth a seat, however good the
+        # record. Unknown rate is not evidence of activity.
+        if rate is None or rate < min_trades_per_day:
+            return False
     if require_closed_trades and not (entry.get("closed_trades") or 0):
         # No completed round trip means the service has nothing to
         # measure: its win rate is absent and its realized PnL cannot be
         # checked against anything. Not a bad trader — an unverifiable
         # one, which is worse to act on.
         return False
+    if max_tokens_per_day > 0:
+        # Anti-sniper: a snipe-and-dump wallet spreads across many
+        # DISTINCT tokens per day; a real trader concentrates.
+        tokens_pd = entry.get("tokens_per_day")
+        if tokens_pd is not None and tokens_pd > max_tokens_per_day:
+            return False
+    if max_win_rate < 1.0:
+        # A win rate near 100% is the "never realise a loser" tell — the
+        # losers are just sitting unsold, so the record only looks perfect.
+        win = entry.get("win_rate")
+        if win is not None and win > max_win_rate:
+            return False
+    if min_profitable_days_ratio > 0:
+        # Anti-honeypot / anti-luck: a real edge is CONSISTENT green days,
+        # not one enormous day from a rug or a single pump.
+        prof = entry.get("profitable_days") or 0
+        days = entry.get("trading_days") or 0
+        if not days or (prof / days) < min_profitable_days_ratio:
+            return False
     if min_volume_usd > 0:
         volume = entry.get("volume_usd")
         # A wallet earning on dust cannot show volume: the pools will
@@ -95,7 +124,11 @@ class SolanaTrackerClient:
                     min_avg_buy_usd: float = 0.0,
                     max_last_trade_age_sec: float = 0.0,
                     min_volume_usd: float = 0.0,
-                    require_closed_trades: bool = False
+                    require_closed_trades: bool = False,
+                    min_trades_per_day: float = 0.0,
+                    max_tokens_per_day: float = 0.0,
+                    max_win_rate: float = 1.0,
+                    min_profitable_days_ratio: float = 0.0
                     ) -> list[dict[str, Any]]:
         """Top wallets ranked by ``sort`` (``win_percentage``,
         ``realized`` PnL, or ``trades``), paginated until ``limit``
@@ -174,7 +207,9 @@ class SolanaTrackerClient:
                     continue
                 if not _tradable(entry, max_trades_per_day, min_avg_buy_usd,
                                  max_last_trade_age_sec, now,
-                                 min_volume_usd, require_closed_trades):
+                                 min_volume_usd, require_closed_trades,
+                                 min_trades_per_day, max_tokens_per_day,
+                                 max_win_rate, min_profitable_days_ratio):
                     continue
                 keepers.append(entry)
             cursor = (body.get("pagination") or {}).get("nextCursor")
@@ -209,6 +244,10 @@ class SolanaTrackerClient:
         counts = item.get("counts") or {}
         trades = counts.get("trades")
         active_days = period.get("tradingDays")
+        tokens_traded = counts.get("tokensTraded")
+        # Per-day profitability consistency: real edge vs one lucky day.
+        day_stats = period.get("days") or {}
+        profitable_days = day_stats.get("profitable")
         averages = item.get("averages") or {}
         last_trade_ms = (item.get("timing") or {}).get("lastTrade")
         return {
@@ -219,6 +258,15 @@ class SolanaTrackerClient:
             "trade_count": trades,
             "trades_per_day": (trades / active_days
                                if trades and active_days else None),
+            # Distinct tokens per day — high for a sniper, low for a real
+            # trader who concentrates. Free anti-sniper signal.
+            "tokens_per_day": (tokens_traded / active_days
+                               if tokens_traded and active_days else None),
+            # Window length and profitable-day count, for the consistency
+            # gate and the composite skill score.
+            "trading_days": active_days,
+            "profitable_days": profitable_days,
+            "roi_pct": period.get("roi"),
             # The trader's typical BUY in dollars. This is the closest
             # thing the board gives us to pool depth: a wallet that
             # routinely puts $500 into a token is working in pools that

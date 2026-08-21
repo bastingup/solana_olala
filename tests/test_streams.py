@@ -31,15 +31,19 @@ def budget_for(store):
 
 
 def nominee(i=0, win_rate=0.7, trades=400, tpd=20.0, avg_buy_usd=500.0,
-            last_trade_at=None, volume_usd=250_000.0, closed_trades=200):
+            last_trade_at=None, volume_usd=250_000.0, closed_trades=200,
+            tokens_per_day=2.0, trading_days=30, profitable_days=20):
     """A board entry. Defaults are QUALIFIED and TRADABLE — real volume,
-    closed round trips, a recent last trade — so a test about seating is
-    not silently emptied by the quality gates."""
+    closed round trips, a recent last trade, low token churn and
+    consistent green days — so a test about seating is not silently
+    emptied by the clean-active gates."""
     return {"address": f"Trusted{i:02d}111111111111111111111111111111",
             "win_rate": win_rate, "pnl_usd": 100000.0 - i,
             "trade_count": trades, "trades_per_day": tpd,
             "avg_buy_usd": avg_buy_usd, "volume_usd": volume_usd,
             "closed_trades": closed_trades,
+            "tokens_per_day": tokens_per_day, "trading_days": trading_days,
+            "profitable_days": profitable_days,
             "last_trade_at": (time.time() if last_trade_at is None
                               else last_trade_at)}
 
@@ -57,7 +61,9 @@ class RecordingTracker(FakeTracker):
                     min_roi_pct=0.0, min_win_rate=0.0,
                     page_size=500, min_avg_buy_usd=0.0,
                     max_last_trade_age_sec=0.0, min_volume_usd=0.0,
-                    require_closed_trades=False):
+                    require_closed_trades=False,
+                    min_trades_per_day=0.0, max_tokens_per_day=0.0,
+                    max_win_rate=1.0, min_profitable_days_ratio=0.0):
         self.params = {"window_days": window_days, "min_trades": min_trades,
                        "min_active_days": min_active_days, "sort": sort,
                        "max_trades_per_day": max_trades_per_day,
@@ -67,12 +73,17 @@ class RecordingTracker(FakeTracker):
                        "min_avg_buy_usd": min_avg_buy_usd,
                        "max_last_trade_age_sec": max_last_trade_age_sec,
                        "min_volume_usd": min_volume_usd,
-                       "require_closed_trades": require_closed_trades}
+                       "require_closed_trades": require_closed_trades,
+                       "min_trades_per_day": min_trades_per_day,
+                       "max_tokens_per_day": max_tokens_per_day,
+                       "max_win_rate": max_win_rate,
+                       "min_profitable_days_ratio": min_profitable_days_ratio}
         return super().top_traders(
             window_days, limit, min_trades, min_active_days, sort,
             max_trades_per_day, max_pages, min_roi_pct, min_win_rate,
             page_size, min_avg_buy_usd, max_last_trade_age_sec,
-            min_volume_usd, require_closed_trades)
+            min_volume_usd, require_closed_trades, min_trades_per_day,
+            max_tokens_per_day, max_win_rate, min_profitable_days_ratio)
 
 
 # -- STREAM SEPARATION ----------------------------------------------------
@@ -194,19 +205,101 @@ def test_freshness_updates_when_a_seated_trader_trades_again(tmp_path, db, bus):
     assert registry.get(entry["address"]).stats.inactive_hours < 1
 
 
-def test_board_position_is_the_score(tmp_path, db, bus):
-    """Score follows the configured ranking, not the win-rate field —
-    a wallet that never sells its losers reports ~100%."""
+def test_composite_score_favours_the_better_trader(tmp_path, db, bus):
+    """Score is a COMPOSITE of win rate, consistency and size — not raw
+    board position. Once the clean-active gates have removed bots and
+    rugs, the seats should go to the strongest of what remains."""
     store = store_with(tmp_path, "discovery:\n  max_followed_traders: 5\n")
-    top = nominee(0, win_rate=0.10)
-    lower = nominee(1, win_rate=0.99)
+    # Same size and activity; the better trader wins more often and more
+    # consistently. It must score higher regardless of board order.
+    better = nominee(0, win_rate=0.90, profitable_days=27)
+    worse = nominee(1, win_rate=0.62, profitable_days=12)
     _, registry, daemon = make_daemon(db, bus, store,
-                                      tracker=FakeTracker([top, lower]))
+                                      tracker=FakeTracker([worse, better]))
 
     daemon._harvest_candidates(store.config, budget_for(store))
 
     by_addr = {p.address: p for p in registry.followed()}
-    assert by_addr[top["address"]].score > by_addr[lower["address"]].score
+    assert by_addr[better["address"]].score > by_addr[worse["address"]].score
+
+
+def test_a_never_sell_losers_wallet_is_excluded_by_the_win_cap(tmp_path,
+                                                               db, bus):
+    """A ~100% win rate is the 'never realise a loser' tell. With the
+    upper cap on, that wallet must not be seated."""
+    store = store_with(
+        tmp_path,
+        "discovery:\n  max_followed_traders: 5\n"
+        "filters_solanatracker:\n  max_win_rate: 0.97\n")
+    fake = nominee(0, win_rate=1.00)
+    real = nominee(1, win_rate=0.85)
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker([fake, real]))
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    seated = {p.address for p in registry.followed()}
+    assert real["address"] in seated
+    assert fake["address"] not in seated
+
+
+def test_a_sniper_is_excluded_by_the_tokens_per_day_cap(tmp_path, db, bus):
+    """A snipe-and-dump wallet churns many distinct tokens per day; a real
+    trader concentrates. The tokens/day cap separates them."""
+    store = store_with(
+        tmp_path,
+        "discovery:\n  max_followed_traders: 5\n"
+        "filters_solanatracker:\n  max_tokens_per_day: 8.0\n")
+    sniper = nominee(0, tokens_per_day=40.0)
+    real = nominee(1, tokens_per_day=2.0)
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker([sniper, real]))
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    seated = {p.address for p in registry.followed()}
+    assert real["address"] in seated
+    assert sniper["address"] not in seated
+
+
+def test_an_inconsistent_wallet_is_excluded_by_the_profitable_days_gate(
+        tmp_path, db, bus):
+    """One lucky pump is not an edge. Requiring a fraction of green days
+    drops the wallet that made its money on a single day."""
+    store = store_with(
+        tmp_path,
+        "discovery:\n  max_followed_traders: 5\n"
+        "filters_solanatracker:\n  min_profitable_days_ratio: 0.5\n")
+    lucky = nominee(0, trading_days=30, profitable_days=4)   # 13% green
+    real = nominee(1, trading_days=30, profitable_days=22)   # 73% green
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker([lucky, real]))
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    seated = {p.address for p in registry.followed()}
+    assert real["address"] in seated
+    assert lucky["address"] not in seated
+
+
+def test_a_too_slow_wallet_is_excluded_by_the_activity_floor(tmp_path,
+                                                             db, bus):
+    """An activity FLOOR keeps the roster trading: a wallet under the
+    minimum trades/day is too slow to be worth a seat."""
+    store = store_with(
+        tmp_path,
+        "discovery:\n  max_followed_traders: 5\n"
+        "filters_solanatracker:\n  min_trades_per_day: 4.0\n")
+    slow = nominee(0, tpd=1.0)
+    active = nominee(1, tpd=8.0)
+    _, registry, daemon = make_daemon(db, bus, store,
+                                      tracker=FakeTracker([slow, active]))
+
+    daemon._harvest_candidates(store.config, budget_for(store))
+
+    seated = {p.address for p in registry.followed()}
+    assert active["address"] in seated
+    assert slow["address"] not in seated
 
 
 def test_activity_cap_is_mechanical_not_quality(tmp_path, db, bus):
@@ -451,34 +544,45 @@ def test_qualified_wallets_without_a_seat_are_kept_as_candidates(
 
 def test_a_watchlisted_wallet_can_take_a_seat_on_a_later_sweep(
         tmp_path, db, bus):
-    """The whole point: today's numbers get it reconsidered."""
+    """The whole point: today's numbers get it reconsidered. Under
+    composite scoring, a wallet earns the seat by IMPROVING its record,
+    not by moving up a board sorted on something else."""
     store = store_with(tmp_path, "discovery:\n  max_followed_traders: 1\n")
-    weak, strong = nominee(9, tpd=10.0), nominee(0, tpd=10.0)
-    tracker = FakeTracker([weak, strong])
+    # `weak` is the better trader at first and takes the only seat.
+    weak = nominee(9, win_rate=0.80, profitable_days=20)
+    strong_early = nominee(0, win_rate=0.64, profitable_days=13)
+    tracker = FakeTracker([weak, strong_early])
     _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
 
     daemon.leaderboard.harvest(store.config)
     assert registry.get(weak["address"]).status is TraderStatus.FOLLOWED
-    assert registry.get(strong["address"]).status is TraderStatus.CANDIDATE
+    assert registry.get(strong_early["address"]).status \
+        is TraderStatus.CANDIDATE
 
-    # Next sweep: `strong` now leads the board and must displace it.
-    tracker.traders = [strong, weak]
+    # Next sweep: the watchlisted wallet's record has clearly improved and
+    # must now displace the incumbent.
+    tracker.traders = [nominee(0, win_rate=0.96, profitable_days=28), weak]
     daemon.leaderboard._last_poll_at = 0.0
     daemon.leaderboard.harvest(store.config)
-    assert registry.get(strong["address"]).status is TraderStatus.FOLLOWED
+    assert registry.get(strong_early["address"]).status \
+        is TraderStatus.FOLLOWED
 
 
 def test_a_watchlisted_wallets_numbers_are_refreshed(tmp_path, db, bus):
     """Tier 2 of the plan — "has anything changed about our traders of
-    interest?" — is free: the same sweep already carries their stats."""
+    interest?" — is free: the same sweep already carries their stats, and
+    the composite score moves when the record does."""
     store = store_with(tmp_path, "discovery:\n  max_followed_traders: 1\n")
-    tracker = FakeTracker([nominee(0, tpd=10.0), nominee(1, tpd=10.0)])
+    tracker = FakeTracker([nominee(0), nominee(1)])
     _, registry, daemon = make_daemon(db, bus, store, tracker=tracker)
     daemon.leaderboard.harvest(store.config)
     watched = registry.by_status(TraderStatus.CANDIDATE)[0]
     before = watched.score
 
-    tracker.traders = [nominee(1, tpd=10.0), nominee(0, tpd=10.0)]
+    # Both wallets' win rates jump on the next sweep; the watched one's
+    # stored score must follow.
+    tracker.traders = [nominee(0, win_rate=0.95, profitable_days=28),
+                       nominee(1, win_rate=0.95, profitable_days=28)]
     daemon.leaderboard._last_poll_at = 0.0
     daemon.leaderboard.harvest(store.config)
     assert registry.get(watched.address).score != before

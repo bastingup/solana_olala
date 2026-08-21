@@ -3,6 +3,137 @@
 Keep this current every session: check off what ships, add what you find.
 Context in [[Project]]; standing decisions in [[Claude]].
 
+## Measured — the CLEAN CEILING is ~35-50 copies/day, not 80 (2026-08-20)
+
+Operator wanted 80 trades/day and authorised loosening filters to get
+there. Experimented against the live board AND reconstructed real
+on-chain buys — the target is not reachable with clean traders, and the
+measurement says why. Operator chose the clean ceiling (grow to ~120
+seats) over including snipers.
+
+### The hard finding
+
+- **The board's trades/day overstates copyable on-chain buys ~30-60x.**
+  A full 60-seat clean roster (board median 12-17 trades/day) produced
+  **1 buy in 2h (~12/day)**; a 120-seat roster sampled at **0.27
+  buys/day/seat → ~32/day**. Two independent windows agree with the
+  earlier 6h census (~28/day).
+- Causes: the board counts sells + USDC/USDT + multi-hop swaps we cannot
+  copy, and its 30-day average does not reflect who is trading NOW (only
+  ~7 of 60 wallets active in any 2-3h window; median seated wallet last
+  traded ~17h ago).
+- **High on-chain SOL-buy frequency only exists among snipers/momentum
+  bots** — exactly what the tokens/day and win-rate-cap gates exclude. So
+  "80/day" and "clean real traders" are structurally in conflict. The
+  whole qualified clean pool on the board is only ~130-170 wallets, so
+  even seating all of them the ceiling is ~35-50 copies/day.
+
+### Shipped (operator's choice: clean ceiling)
+
+- [x] Roster `max_followed_traders` 60 → **120** — seat the whole clean
+      pool. Tracking cost unchanged (round-robin ~1 call/s regardless of
+      size; 120s coverage pass; batch interval 120/10 = 12s). Verified
+      live: 120/120 seats filled, clean boot, 0 poll failures.
+- [x] Volume-tuned the pool-limiting gates to fill 120 seats while
+      keeping the anti-junk character: `min_avg_buy_usd` 150 → 75,
+      `min_volume_usd` 5000 → 2000, `max_trades_per_day` 60 → 120,
+      `max_tokens_per_day` 8 → 10, `min_profitable_days_ratio` 0.5 → 0.40,
+      `max_last_trade_hours` 48 → 96. The CORE purity gates (tokens/day
+      cap, win-rate cap 0.97, consistency floor) stay tight — this is
+      still "no snipers", just the whole clean pool.
+- [x] **Activity term added to the composite score** (0.35 win + 0.22
+      consistency + 0.18 volume + **0.25 activity**, `ACTIVITY_REF_TPD`
+      40). When the pool exceeds the roster it biases seating toward the
+      more active clean traders; capped so speed cannot out-vote quality.
+- [x] Cleared the stale roster on apply (0 open positions, nothing lost)
+      for an instant clean 120.
+
+### Standing conclusion (do not re-litigate without new data)
+
+80 copyable buys/day is NOT achievable with clean traders on this board;
+~35-50/day is the real ceiling. Reaching 80 requires the hybrid or
+sniper-inclusive direction the operator declined. Judge the strategy on
+the COPIES' paper PnL over days, not on trade count.
+
+## Done — clean-first trader selection + composite scoring (2026-08-20)
+
+Operator brief: relatively high frequency (~5 trades/day/trader), but
+ONLY real top-tier traders — no honeypots, no snipers — active, high
+volume, high win rate. Consulted with LIVE Solana Tracker API data first,
+then implemented the operator's chosen path (clean-first stance + all
+three volume levers).
+
+### The measurement that reframed it (live API + on-chain reconstruction)
+
+- Pulled the full qualified board (1,423 wallets) and the RAW payload. We
+  were using ~a third of the available fields.
+- **The board's trades/day badly overstates copyable buys, and a 30-day
+  average lags current behaviour.** Reconstructed real on-chain buys for
+  candidates across the range: board 8/day → ~2.4 real buys/day; board
+  21/day → ~0.5 (near-dormant last 8 days despite the 30d average);
+  board 46/day → ~0 (only sells); board 97/day → ~6 (but 100% win =
+  never-sell-losers). So "5 trades/day/trader" on the board ≠ 5 copies.
+- **The clean-real band produces ~2 copyable buys/day each.** 42–60 such
+  traders × ~2 ≈ 80–120 buys/day FLEET-wide — the target is hit at the
+  fleet level via roster size + freshness, not per-trader frequency.
+- The high-frequency end (board >80/day) is exactly where snipers, bots
+  and never-sell-losers concentrate — hence "clean-first".
+
+### Shipped — new selection signals (all free from payload, no RPC)
+
+Parsed three fields we were discarding and added four gates to Stream A
+(`filters_solanatracker`), plus a composite score:
+
+- [x] **Activity floor** `min_trades_per_day` (4) — too slow to earn a
+      seat, however good the record. Previously there was NO minimum.
+- [x] **Anti-bot ceiling** `max_trades_per_day` 400 → 60 — above human
+      cadence is machine territory.
+- [x] **Anti-sniper** `max_tokens_per_day` (8) — a snipe-and-dump wallet
+      churns many DISTINCT tokens/day (`tokensTraded / tradingDays`); a
+      real trader concentrates. NEW signal.
+- [x] **Anti-never-sell-losers** `max_win_rate` (0.97) — a ~100% record
+      is the tell that losers sit unrealised. The API offers only a
+      minimum, so the cap is client-side. NEW.
+- [x] **Anti-honeypot / anti-luck** `min_profitable_days_ratio` (0.5) —
+      `days.profitable / tradingDays`; a rug or one lucky pump shows a
+      single huge day, a real edge shows consistent green days. NEW.
+- [x] **Real capital** `min_avg_buy_usd` 0 → 150 — a few-dollar average
+      buy works in dust/honeypot pools we cannot fill.
+- [x] `min_win_rate` 0.55 → 0.60 (pushed server-side).
+
+### Shipped — the three volume levers (operator picked all three)
+
+- [x] **Recency** `max_last_trade_hours` 168 → 48 — the single
+      highest-impact change; the 30d board metric lags, so recency is what
+      keeps the roster trading THIS WEEK.
+- [x] **Roster** `discovery.max_followed_traders` 42 → 60 — direct lever
+      on fleet copy volume; 60 wallets / 10 wallet-calls/s → ~6s derived
+      batch interval, well inside the tracking budget.
+- [x] **Composite scoring** (`LeaderboardSource._score`): replaced
+      board-position with `0.45·win + 0.30·consistency + 0.25·log-volume`
+      (board position kept only as a hair-thin tie-break). Once the gates
+      remove bots/snipers/rugs, seats go to the strongest of what remains,
+      judged on three payload signals at once. The win term is capped by
+      the same 0.97 gate, so a never-sell-losers 100% cannot dominate.
+
+### Verified LIVE against the real API with the shipped config
+
+**31 clean traders qualified in 2.5s** (median: 11 trades/day, 2.3
+tokens/day, 76% win, $258 avg buy, 75% green days). Composite ranking
+seats exactly the target profile — e.g. top 4: 96%/18tpd/4.4tok,
+90%/32/6.8, 95%/23/4.6, 89%/34/5.5, all with consistent green days and
+real volume. **466 tests green** (11 new: composite scoring + each gate),
+pyflakes clean.
+
+### Tradeoff surfaced for the operator
+
+At 48h recency the clean pool is ~31 right now, so it fills 31 of 60
+seats from Stream A (winners'-holders Stream B fills more). Loosening
+`max_last_trade_hours` to 72–96h would fill more seats at a small
+freshness cost — a one-line config knob. The old 42-trader roster in the
+DB will re-score under the new gates and retire non-qualifiers over ~3
+sweeps; clearing the `traders` table gives an instant clean roster.
+
 ## Fixed — audited copy pipeline: 4 defects found and fixed (2026-08-20)
 
 **Outcome:** the copy path was never broken (it executed a copy mid-audit),

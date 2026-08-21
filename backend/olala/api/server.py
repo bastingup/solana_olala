@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from pathlib import Path
 
 from flask import Flask, send_from_directory
@@ -46,15 +47,28 @@ FRONTEND_DIR = Path(__file__).resolve().parents[3] / "frontend"
 # Anything whose name looks like a credential never reaches a client,
 # whatever section it was added to. A hand-maintained list of secret
 # keys is one forgotten entry away from publishing an API key.
-_SECRET_HINTS = ("api_key", "apikey", "secret", "password", "token",
-                 "private_key", "mnemonic")
+#
+# Matched on WORD boundaries, not raw substring: a bare substring test
+# treated `max_tokens_per_day` as a secret because "token" is inside it,
+# and silently dropped a real config field from the snapshot. A hint now
+# has to be its own segment (start/end or between underscores), so
+# `token`/`api_key`/`secret` still redact `auth_token`, `helius_api_key`,
+# `client_secret`, while `tokens_per_day` and `tokens_traded` survive.
+_SECRET_RE = re.compile(
+    r"(?:^|_)(?:api_?key|secret|password|passphrase|mnemonic|"
+    r"private_key|token)(?:$|_)",
+    re.IGNORECASE)
+
+
+def _is_secret_key(key: str) -> bool:
+    return bool(_SECRET_RE.search(key))
 
 
 def _redact_secrets(value):
     """Recursively drop credential-shaped keys from a config snapshot."""
     if isinstance(value, dict):
         return {k: _redact_secrets(v) for k, v in value.items()
-                if not any(hint in k.lower() for hint in _SECRET_HINTS)}
+                if not _is_secret_key(str(k))}
     if isinstance(value, list):
         return [_redact_secrets(v) for v in value]
     return value
